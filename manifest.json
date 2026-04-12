@@ -1,10 +1,11 @@
 {
-  "id": "daily-word-count-chart",
-  "name": "Daily Word Count Chart",
+  "id": "diary-navigator",
+  "name": "Diary Navigator",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "Display daily word count statistics in a line chart",
-  "author": "Your Name",
-  "authorUrl": "",
+  "description": "Navigate through your diary with charts, monthly averages, memory recall and more.",
+  "author": "polotreetion",
+  "authorUrl": "https://github.com/polotreetion",
+  "fundingUrl": "",
   "isDesktopOnly": false
 }

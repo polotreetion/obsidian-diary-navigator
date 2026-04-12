@@ -14,11 +14,11 @@ const DEFAULT_SETTINGS: DailyWordCountSettings = {
     dateFormat: 'YYYY-MM-DD'
 };
 
-const VIEW_TYPE_WORD_COUNT = 'word-count-chart-view';
+const VIEW_TYPE_DIARY_NAVIGATOR = 'word-count-chart-view';
 
 // 自定义视图类
-class WordCountChartView extends ItemView {
-    plugin: DailyWordCountPlugin;
+class DiaryNavigatorView extends ItemView {
+    plugin: DiaryNavigatorPlugin;
     dailyChart: Chart | null = null;
     monthlyChart: Chart | null = null;
     currentDays: number = 30;
@@ -28,21 +28,21 @@ class WordCountChartView extends ItemView {
     memoryContainer: HTMLElement | null = null;
     lastYearContainer: HTMLElement | null = null;
 
-    constructor(leaf: WorkspaceLeaf, plugin: DailyWordCountPlugin) {
+    constructor(leaf: WorkspaceLeaf, plugin: DiaryNavigatorPlugin) {
         super(leaf);
         this.plugin = plugin;
     }
 
     getViewType(): string {
-        return VIEW_TYPE_WORD_COUNT;
+        return VIEW_TYPE_DIARY_NAVIGATOR;
     }
 
     getDisplayText(): string {
-        return '日记字数统计';
+        return 'Diary Navigator';
     }
 
     getIcon(): string {
-        return 'line-chart';
+        return 'compass';
     }
 
     async onOpen() {
@@ -1064,48 +1064,48 @@ class WordCountChartView extends ItemView {
 }
 
 // 主插件类
-export default class DailyWordCountPlugin extends Plugin {
+export default class DiaryNavigatorPlugin extends Plugin {
     settings: DailyWordCountSettings;
 
     async onload() {
         await this.loadSettings();
         
         this.registerView(
-            VIEW_TYPE_WORD_COUNT,
-            (leaf) => new WordCountChartView(leaf, this)
+            VIEW_TYPE_DIARY_NAVIGATOR,
+            (leaf) => new DiaryNavigatorView(leaf, this)
         );
         
         this.addCommand({
-            id: 'open-word-count-chart',
-            name: '打开日记字数统计',
+            id: 'open-diary-navigator',
+            name: '打开日记导航器',
             callback: () => {
                 this.activateView();
             }
         });
         
-        this.addRibbonIcon('line-chart', '日记字数统计', () => {
+        this.addRibbonIcon('line-chart', 'Diary Navigator', () => {
             this.activateView();
         });
         
-        this.addSettingTab(new DailyWordCountSettingTab(this.app, this));
+        this.addSettingTab(new DiaryNavigatorSettingTab(this.app, this));
         
-        console.log('日记字数统计插件已加载');
+        console.log('Diary Navigator 插件已加载');
     }
 
     onunload() {
-        console.log('日记字数统计插件已卸载');
+        console.log('Diary Navigator 插件已卸载');
     }
 
     async activateView() {
         const { workspace } = this.app;
         
-        let leaf = workspace.getLeavesOfType(VIEW_TYPE_WORD_COUNT)[0];
+        let leaf = workspace.getLeavesOfType(VIEW_TYPE_DIARY_NAVIGATOR)[0];
         
         if (!leaf) {
             const rightLeaf = workspace.getRightLeaf(false);
             if (rightLeaf) {
                 await rightLeaf.setViewState({
-                    type: VIEW_TYPE_WORD_COUNT,
+                    type: VIEW_TYPE_DIARY_NAVIGATOR,
                     active: true,
                 });
                 leaf = rightLeaf;
@@ -1127,10 +1127,10 @@ export default class DailyWordCountPlugin extends Plugin {
 }
 
 // 设置选项卡
-class DailyWordCountSettingTab extends PluginSettingTab {
-    plugin: DailyWordCountPlugin;
+class DiaryNavigatorSettingTab extends PluginSettingTab {
+    plugin: DiaryNavigatorPlugin;
 
-    constructor(app: App, plugin: DailyWordCountPlugin) {
+    constructor(app: App, plugin: DiaryNavigatorPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
