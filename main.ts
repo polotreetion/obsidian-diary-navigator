@@ -1,12 +1,18 @@
-import { App, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { App, ItemView, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } from 'obsidian';
 import { Chart, registerables } from 'chart.js';
 
-// 注册 Chart.js 组件
 Chart.register(...registerables);
 
 interface DailyWordCountSettings {
     diaryFolder: string;
     dateFormat: string;
+}
+
+interface TodayHistoryEntry {
+    date: string;
+    year: number;
+    wordCount: number;
+    preview: string;
 }
 
 const DEFAULT_SETTINGS: DailyWordCountSettings = {
@@ -16,17 +22,25 @@ const DEFAULT_SETTINGS: DailyWordCountSettings = {
 
 const VIEW_TYPE_DIARY_NAVIGATOR = 'word-count-chart-view';
 
-// 自定义视图类
 class DiaryNavigatorView extends ItemView {
     plugin: DiaryNavigatorPlugin;
     dailyChart: Chart | null = null;
     monthlyChart: Chart | null = null;
-    currentDays: number = 30;
+    currentDays = 30;
+    currentHeatmapYear = new Date().getFullYear();
     dailyFullDates: string[] = [];
     monthlyFullMonths: string[] = [];
     daysSelect: HTMLSelectElement | null = null;
     memoryContainer: HTMLElement | null = null;
-    lastYearContainer: HTMLElement | null = null;
+    heatmapContainer: HTMLElement | null = null;
+    todayHistoryContainer: HTMLElement | null = null;
+    heatmapYearLabel: HTMLElement | null = null;
+    heatmapDaysLabel: HTMLElement | null = null;
+    heatmapPeakLabel: HTMLElement | null = null;
+    heatmapPrevBtn: HTMLButtonElement | null = null;
+    heatmapNextBtn: HTMLButtonElement | null = null;
+    heatmapResizeObserver: ResizeObserver | null = null;
+    heatmapResizeFrame: number | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: DiaryNavigatorPlugin) {
         super(leaf);
@@ -46,14 +60,91 @@ class DiaryNavigatorView extends ItemView {
     }
 
     async onOpen() {
-        const container = this.containerEl.children[1];
+        const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('word-count-chart-view');
-        
-        // 创建统计信息区域
-        const statsDiv = container.createDiv('word-count-stats');
-        
-        // 创建双图表容器
+
+        container.createDiv('word-count-stats');
+
+        const heatmapSection = this.createCard(container, { minWidth: '100%' });
+        this.createPanelHeader(heatmapSection, '🗺️ 年度写作热力图', (actionsEl) => {
+            actionsEl.style.cssText = `
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                flex-wrap: wrap;
+                margin-left: auto;
+            `;
+
+            const metaGroup = actionsEl.createDiv('heatmap-meta-group');
+            metaGroup.style.cssText = `
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+                color: var(--text-muted);
+                font-size: 12px;
+            `;
+
+            this.heatmapDaysLabel = metaGroup.createSpan({ text: '已记录 0 天' });
+            this.heatmapPeakLabel = metaGroup.createSpan({ text: '峰值 0 字' });
+
+            const legend = metaGroup.createDiv('heatmap-inline-legend');
+            legend.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            `;
+            legend.createSpan({ text: '少' });
+            for (let i = 0; i < 5; i++) {
+                const box = legend.createDiv('heatmap-legend-box');
+                box.style.cssText = `
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 4px;
+                    border: 1px solid var(--background-modifier-border-hover);
+                `;
+                box.setAttribute('data-heatmap-legend', i.toString());
+            }
+            legend.createSpan({ text: '多' });
+
+            const yearSwitch = actionsEl.createDiv('heatmap-year-switch');
+            yearSwitch.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            `;
+
+            this.heatmapPrevBtn = yearSwitch.createEl('button', { text: '←' });
+            this.heatmapPrevBtn.style.cssText = this.getCompactButtonStyle();
+            this.heatmapPrevBtn.addEventListener('click', async () => {
+                this.currentHeatmapYear--;
+                await this.loadHeatmap();
+            });
+
+            this.heatmapYearLabel = yearSwitch.createSpan({ text: `${this.currentHeatmapYear}年` });
+            this.heatmapYearLabel.style.cssText = `
+                min-width: 56px;
+                text-align: center;
+                font-weight: 600;
+            `;
+
+            this.heatmapNextBtn = yearSwitch.createEl('button', { text: '→' });
+            this.heatmapNextBtn.style.cssText = this.getCompactButtonStyle();
+            this.heatmapNextBtn.addEventListener('click', async () => {
+                const currentYear = new Date().getFullYear();
+                if (this.currentHeatmapYear < currentYear) {
+                    this.currentHeatmapYear++;
+                    await this.loadHeatmap();
+                }
+            });
+        });
+        this.heatmapContainer = heatmapSection.createDiv('heatmap-container');
+        this.heatmapContainer.style.cssText = `
+            margin-top: 8px;
+        `;
+        this.setupHeatmapResizeObserver();
+
         const chartsWrapper = container.createDiv('charts-wrapper');
         chartsWrapper.style.cssText = `
             display: flex;
@@ -61,102 +152,42 @@ class DiaryNavigatorView extends ItemView {
             margin-top: 20px;
             flex-wrap: wrap;
         `;
-        
-        // 左侧：每日字数折线图
-        const dailyChartSection = chartsWrapper.createDiv('daily-chart-section');
-        dailyChartSection.style.cssText = `
-            flex: 1;
-            min-width: 400px;
-            padding: 16px;
-            background-color: var(--background-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-        
-        // 图表标题和控制按钮在同一行
-        const dailyHeader = dailyChartSection.createDiv('daily-header');
-        dailyHeader.style.cssText = `
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        `;
-        
-        dailyHeader.createEl('h3', { text: '📈 每日字数趋势' });
-        
-        // 控制按钮组
-        const controlsGroup = dailyHeader.createDiv('controls-group');
-        controlsGroup.style.cssText = `
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        `;
-        
-        // 刷新按钮
-        const refreshBtn = controlsGroup.createEl('button', {
-            text: '🔄',
-            cls: 'mod-cta'
-        });
-        refreshBtn.style.cssText = `
-            padding: 4px 8px;
-            font-size: 14px;
-        `;
-        refreshBtn.setAttribute('title', '刷新数据');
-        refreshBtn.addEventListener('click', () => {
-            this.refreshAllCharts();
-        });
-        
-        // 天数选择
-        this.daysSelect = controlsGroup.createEl('select');
-        this.daysSelect.style.cssText = `
-            padding: 4px 8px;
-            font-size: 14px;
-            border-radius: 4px;
-            background-color: var(--background-modifier-form-field);
-            border: 1px solid var(--background-modifier-border);
-        `;
-        [7, 14, 30, 60, 90].forEach(days => {
-            const option = this.daysSelect!.createEl('option', { 
-                text: `${days}天`,
-                value: days.toString()
+
+        const dailyChartSection = this.createCard(chartsWrapper, { minWidth: '400px' });
+        this.createPanelHeader(dailyChartSection, '📈 每日字数趋势', (actionsEl) => {
+            this.daysSelect = actionsEl.createEl('select');
+            this.daysSelect.style.cssText = this.getControlStyle();
+
+            [7, 14, 30, 60, 90].forEach((days) => {
+                const option = this.daysSelect!.createEl('option', {
+                    text: `${days}天`,
+                    value: days.toString()
+                });
+                option.selected = days === this.currentDays;
             });
-            if (days === 30) option.selected = true;
+
+            this.daysSelect.addEventListener('change', (event) => {
+                this.currentDays = parseInt((event.target as HTMLSelectElement).value, 10);
+                this.refreshDailyChart();
+            });
         });
-        
-        this.daysSelect.addEventListener('change', (e) => {
-            this.currentDays = parseInt((e.target as HTMLSelectElement).value);
-            this.refreshDailyChart();
-        });
-        
+
         const dailyChartContainer = dailyChartSection.createDiv('chart-container');
         dailyChartContainer.style.cssText = `
-            height: 300px;
+            height: 240px;
             margin-top: 10px;
         `;
-        const dailyCanvas = dailyChartContainer.createEl('canvas');
-        dailyCanvas.id = 'daily-word-chart';
-        
-        // 右侧：月度平均柱状图
-        const monthlyChartSection = chartsWrapper.createDiv('monthly-chart-section');
-        monthlyChartSection.style.cssText = `
-            flex: 1;
-            min-width: 400px;
-            padding: 16px;
-            background-color: var(--background-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-        
-        monthlyChartSection.createEl('h3', { text: '📊 月度平均字数' });
+        dailyChartContainer.createEl('canvas', { attr: { id: 'daily-word-chart' } });
+
+        const monthlyChartSection = this.createCard(chartsWrapper, { minWidth: '400px' });
+        this.createPanelHeader(monthlyChartSection, '📊 月度平均字数');
         const monthlyChartContainer = monthlyChartSection.createDiv('chart-container');
         monthlyChartContainer.style.cssText = `
-            height: 300px;
+            height: 240px;
             margin-top: 10px;
         `;
-        const monthlyCanvas = monthlyChartContainer.createEl('canvas');
-        monthlyCanvas.id = 'monthly-avg-chart';
-        
-        // 创建回忆区域（两栏布局）
+        monthlyChartContainer.createEl('canvas', { attr: { id: 'monthly-avg-chart' } });
+
         const memoryWrapper = container.createDiv('memory-wrapper');
         memoryWrapper.style.cssText = `
             display: flex;
@@ -164,394 +195,180 @@ class DiaryNavigatorView extends ItemView {
             margin-top: 20px;
             flex-wrap: wrap;
         `;
-        
-        // 左侧：回忆漫游（三条随机）
-        const memorySection = memoryWrapper.createDiv('memory-section');
-        memorySection.style.cssText = `
-            flex: 1;
-            min-width: 350px;
-            padding: 16px;
-            background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-        
-        const memoryHeader = memorySection.createDiv('memory-header');
-        memoryHeader.style.cssText = `
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        `;
-        
-        memoryHeader.createEl('h3', { text: '📜 回忆漫游' });
-        
-        const refreshMemoryBtn = memoryHeader.createEl('button', {
-            text: '🔄 换一批',
-            cls: 'mod-cta'
+
+        const memorySection = this.createCard(memoryWrapper, {
+            minWidth: '350px',
+            background: 'linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%)'
         });
-        refreshMemoryBtn.style.cssText = `
-            padding: 4px 12px;
-            font-size: 14px;
-        `;
-        
+        this.createPanelHeader(memorySection, '🎐 回忆漫游', (actionsEl) => {
+            const refreshMemoryBtn = actionsEl.createEl('button', {
+                text: '🎲 换一批',
+                cls: 'mod-cta'
+            });
+            refreshMemoryBtn.style.cssText = this.getButtonStyle();
+            refreshMemoryBtn.addEventListener('click', () => {
+                this.loadRandomMemories();
+            });
+        });
         this.memoryContainer = memorySection.createDiv('memory-container');
         this.memoryContainer.style.cssText = `
             display: flex;
             flex-direction: column;
             gap: 12px;
         `;
-        
-        // 右侧：去年今日
-        const lastYearSection = memoryWrapper.createDiv('last-year-section');
-        lastYearSection.style.cssText = `
-            flex: 1;
-            min-width: 350px;
-            padding: 16px;
-            background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-        
-        const lastYearHeader = lastYearSection.createDiv('last-year-header');
-        lastYearHeader.style.cssText = `
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        `;
-        
-        const today = new Date();
-        const lastYearDate = new Date(today);
-        lastYearDate.setFullYear(today.getFullYear() - 1);
-        const lastYearStr = this.formatDate(lastYearDate);
-        
-        lastYearHeader.createEl('h3', { text: `📅 去年今日 (${lastYearStr})` });
-        
-        const openLastYearBtn = lastYearHeader.createEl('button', {
-            text: '📝 打开',
-            cls: 'mod-cta'
+
+        const todayHistorySection = this.createCard(memoryWrapper, {
+            minWidth: '350px',
+            background: 'linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%)'
         });
-        openLastYearBtn.style.cssText = `
-            padding: 4px 12px;
-            font-size: 14px;
-        `;
-        openLastYearBtn.addEventListener('click', () => {
-            this.openDiaryFile(lastYearStr);
-        });
-        
-        this.lastYearContainer = lastYearSection.createDiv('last-year-container');
-        this.lastYearContainer.style.cssText = `
-            padding: 12px;
-            background-color: var(--background-primary);
-            border-radius: 6px;
-            min-height: 200px;
-            max-height: 400px;
-            overflow-y: auto;
-        `;
-        
-        // 加载随机回忆
-        const loadRandomMemories = async () => {
-            if (!this.memoryContainer) return;
-            
-            this.memoryContainer.empty();
-            
-            // 显示加载中
-            for (let i = 0; i < 3; i++) {
-                const loadingItem = this.memoryContainer.createDiv('memory-item');
-                loadingItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    color: var(--text-muted);
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-                loadingItem.setText('加载中...');
-            }
-            
-            const memories = await this.getRandomMemories(3);
-            
-            this.memoryContainer.empty();
-            
-            if (memories.length === 0) {
-                const emptyItem = this.memoryContainer.createDiv('memory-item');
-                emptyItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    color: var(--text-muted);
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-                emptyItem.setText('暂无日记记录，开始写日记吧！');
-                return;
-            }
-            
-            memories.forEach((memory) => {
-                const memoryItem = this.memoryContainer!.createDiv('memory-item');
-                memoryItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-                
-                // 显示文字和日期
-                const memoryText = memoryItem.createDiv('memory-text');
-                memoryText.setText(memory.text);
-                memoryText.style.cssText = `
-                    font-size: 1em;
-                    line-height: 1.6;
-                    color: var(--text-normal);
-                    margin-bottom: 6px;
-                `;
-                
-                const memoryDate = memoryItem.createDiv('memory-date');
-                memoryDate.setText(`📅 ${memory.date}`);
-                memoryDate.style.cssText = `
-                    font-size: 0.85em;
-                    color: var(--text-muted);
-                `;
-                
-                // 悬停效果
-                memoryItem.addEventListener('mouseenter', () => {
-                    memoryItem.style.backgroundColor = 'var(--background-secondary)';
-                    memoryItem.style.transform = 'translateX(4px)';
-                });
-                memoryItem.addEventListener('mouseleave', () => {
-                    memoryItem.style.backgroundColor = 'var(--background-primary)';
-                    memoryItem.style.transform = 'translateX(0)';
-                });
-                
-                // 点击跳转 - 使用闭包保存正确的日期
-                const dateToOpen = memory.date;
-                memoryItem.addEventListener('click', () => {
-                    this.openDiaryFile(dateToOpen);
-                });
+        const lastYearStr = this.formatDate(this.getLastYearToday());
+        this.createPanelHeader(todayHistorySection, `🕰️ 往年今日 (${lastYearStr.slice(5)})`, (actionsEl) => {
+            const openLastYearBtn = actionsEl.createEl('button', {
+                text: '📖 去年今日',
+                cls: 'mod-cta'
             });
-        };
-        
-        // 加载去年今日
-        const loadLastYearDiary = async () => {
-            if (!this.lastYearContainer) return;
-            
-            this.lastYearContainer.empty();
-            
-            const loadingItem = this.lastYearContainer.createDiv('loading-item');
-            loadingItem.setText('加载中...');
-            loadingItem.style.cssText = `
-                color: var(--text-muted);
-                text-align: center;
-                padding: 20px;
-            `;
-            
-            const lastYearContent = await this.getLastYearDiary();
-            
-            this.lastYearContainer.empty();
-            
-            if (!lastYearContent) {
-                const emptyItem = this.lastYearContainer.createDiv('empty-item');
-                emptyItem.setText('去年的今天没有写日记');
-                emptyItem.style.cssText = `
-                    color: var(--text-muted);
-                    text-align: center;
-                    padding: 20px;
-                `;
-                return;
-            }
-            
-            // 显示日记内容预览
-            const previewDiv = this.lastYearContainer.createDiv('preview-content');
-            previewDiv.style.cssText = `
-                line-height: 1.8;
-                color: var(--text-normal);
-                cursor: pointer;
-            `;
-            
-            // 截取前500字作为预览
-            const previewText = lastYearContent.length > 500 
-                ? lastYearContent.substring(0, 500) + '...' 
-                : lastYearContent;
-            
-            // 简单的 Markdown 渲染（转义 HTML）
-            const escapedText = this.escapeHtml(previewText);
-            previewDiv.innerHTML = escapedText.replace(/\n/g, '<br>');
-            
-            // 字数统计
-            const wordCount = this.countWords(lastYearContent);
-            const wordCountDiv = this.lastYearContainer.createDiv('word-count');
-            wordCountDiv.style.cssText = `
-                margin-top: 12px;
-                padding-top: 12px;
-                border-top: 1px solid var(--background-modifier-border);
-                font-size: 0.9em;
-                color: var(--text-muted);
-            `;
-            wordCountDiv.setText(`📝 共 ${wordCount.toLocaleString()} 字`);
-            
-            // 点击预览区域跳转
-            previewDiv.addEventListener('click', () => {
-                const today = new Date();
-                const lastYearDate = new Date(today);
-                lastYearDate.setFullYear(today.getFullYear() - 1);
-                const lastYearStr = this.formatDate(lastYearDate);
+            openLastYearBtn.style.cssText = this.getButtonStyle();
+            openLastYearBtn.addEventListener('click', () => {
                 this.openDiaryFile(lastYearStr);
             });
-            
-            previewDiv.addEventListener('mouseenter', () => {
-                previewDiv.style.backgroundColor = 'var(--background-secondary)';
-            });
-            previewDiv.addEventListener('mouseleave', () => {
-                previewDiv.style.backgroundColor = 'transparent';
-            });
-        };
-        
-        refreshMemoryBtn.addEventListener('click', loadRandomMemories);
-        
-        // 加载提示
+        });
+        this.todayHistoryContainer = todayHistorySection.createDiv('today-history-container');
+        this.todayHistoryContainer.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        `;
+
         const loadingDiv = container.createDiv('loading-indicator');
         loadingDiv.setText('加载数据中...');
         loadingDiv.style.cssText = 'text-align: center; padding: 20px; color: var(--text-muted);';
-        
-        // 初始化图表和回忆
-        setTimeout(async () => {
-            if (loadingDiv) loadingDiv.remove();
+
+        window.setTimeout(async () => {
+            loadingDiv.remove();
             await this.refreshAllCharts();
-            await loadRandomMemories();
-            await loadLastYearDiary();
         }, 100);
     }
 
-    escapeHtml(text: string): string {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+    async onClose() {
+        this.dailyChart?.destroy();
+        this.monthlyChart?.destroy();
+        this.heatmapResizeObserver?.disconnect();
+        if (this.heatmapResizeFrame !== null) {
+            cancelAnimationFrame(this.heatmapResizeFrame);
+            this.heatmapResizeFrame = null;
+        }
     }
 
-    async getLastYearDiary(): Promise<string | null> {
-        const today = new Date();
-        const lastYearDate = new Date(today);
-        lastYearDate.setFullYear(today.getFullYear() - 1);
-        const lastYearStr = this.formatDate(lastYearDate);
-        
-        const folderPath = this.plugin.settings.diaryFolder;
-        const filePath = `${folderPath}/${lastYearStr}.md`;
-        
-        try {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file && file instanceof TFile) {
-                const content = await this.app.vault.read(file);
-                // 移除 YAML frontmatter
-                const contentWithoutFrontmatter = content.replace(/^---[\s\S]*?---\n?/, '').trim();
-                return contentWithoutFrontmatter;
-            }
-        } catch (error) {
-            console.error('读取去年今日日记时出错:', error);
-        }
-        
-        return null;
+    createCard(container: HTMLElement, options?: { minWidth?: string; background?: string }) {
+        const card = container.createDiv();
+        card.style.cssText = `
+            flex: 1;
+            min-width: ${options?.minWidth ?? '400px'};
+            padding: 16px;
+            background: ${options?.background ?? 'var(--background-secondary)'};
+            border-radius: 8px;
+            border: 1px solid var(--background-modifier-border);
+        `;
+        return card;
     }
 
-    async getRandomMemories(count: number): Promise<{ text: string; date: string }[]> {
-        const folderPath = this.plugin.settings.diaryFolder;
-        const memories: { text: string; date: string }[] = [];
-        
-        try {
-            const files = this.app.vault.getFiles();
-            const diaryFiles: TFile[] = [];
-            
-            // 收集所有日记文件
-            for (const file of files) {
-                if (file.path.startsWith(folderPath + '/') && file.extension === 'md') {
-                    const fileName = file.basename;
-                    if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-                        diaryFiles.push(file);
-                    }
-                }
-            }
-            
-            if (diaryFiles.length === 0) {
-                return [];
-            }
-            
-            // 收集所有有效行
-            const allLines: { text: string; date: string }[] = [];
-            
-            for (const file of diaryFiles) {
-                const content = await this.app.vault.read(file);
-                const dateStr = file.basename;
-                
-                // 解析内容，提取有效行
-                const lines = content.split('\n')
-                    .map(line => line.trim())
-                    .filter(line => {
-                        // 过滤掉空行、标题、代码块、frontmatter等
-                        return line.length > 0 &&
-                               !line.startsWith('#') &&
-                               !line.startsWith('---') &&
-                               !line.startsWith('```') &&
-                               !line.startsWith('- [ ]') &&
-                               !line.startsWith('- [x]') &&
-                               !line.match(/^[0-9]+\./) &&
-                               !line.startsWith('>') &&
-                               line.length > 10;
-                    });
-                
-                for (const line of lines) {
-                    allLines.push({
-                        text: line,
-                        date: dateStr
-                    });
-                }
-            }
-            
-            if (allLines.length === 0) {
-                return [];
-            }
-            
-            // 随机选择 count 条，不重复
-            const selected = new Set<number>();
-            const maxCount = Math.min(count, allLines.length);
-            
-            while (selected.size < maxCount) {
-                const randomIndex = Math.floor(Math.random() * allLines.length);
-                selected.add(randomIndex);
-            }
-            
-            const selectedIndices = Array.from(selected);
-            for (const index of selectedIndices) {
-                memories.push(allLines[index]);
-            }
-            
-            return memories;
-            
-        } catch (error) {
-            console.error('获取随机回忆时出错:', error);
-            return [];
+    createPanelHeader(container: HTMLElement, title: string, buildActions?: (actionsEl: HTMLElement) => void) {
+        const header = container.createDiv('section-header');
+        header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        `;
+        const titleEl = header.createEl('h3', { text: title });
+        titleEl.style.cssText = `
+            margin: 0;
+            line-height: 1.2;
+        `;
+
+        if (buildActions) {
+            const actionsEl = header.createDiv('section-actions');
+            actionsEl.style.cssText = `
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+            `;
+            buildActions(actionsEl);
         }
+
+        return header;
+    }
+
+    getButtonStyle() {
+        return `
+            padding: 6px 12px;
+            font-size: 14px;
+        `;
+    }
+
+    getCompactButtonStyle() {
+        return `
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        `;
+    }
+
+    setupHeatmapResizeObserver() {
+        this.heatmapResizeObserver?.disconnect();
+        if (!this.heatmapContainer) return;
+
+        this.heatmapResizeObserver = new ResizeObserver(() => {
+            if (this.heatmapResizeFrame !== null) {
+                cancelAnimationFrame(this.heatmapResizeFrame);
+            }
+            this.heatmapResizeFrame = requestAnimationFrame(() => {
+                this.heatmapResizeFrame = null;
+                this.loadHeatmap();
+            });
+        });
+
+        this.heatmapResizeObserver.observe(this.heatmapContainer);
+    }
+
+    getControlStyle() {
+        return `
+            padding: 4px 8px;
+            font-size: 14px;
+            border-radius: 4px;
+            background-color: var(--background-modifier-form-field);
+            border: 1px solid var(--background-modifier-border);
+        `;
     }
 
     async refreshAllCharts() {
         if (this.daysSelect) {
             this.daysSelect.value = this.currentDays.toString();
         }
+
         await this.refreshDailyChart();
         await this.refreshMonthlyChart();
+        await this.loadHeatmap();
+        await this.loadRandomMemories();
+        await this.loadTodayHistory();
     }
 
     async refreshDailyChart() {
-        const canvas = document.getElementById('daily-word-chart') as HTMLCanvasElement;
+        const canvas = document.getElementById('daily-word-chart') as HTMLCanvasElement | null;
         if (!canvas) return;
-        
+
         try {
             const data = await this.getDailyWordCountData(this.currentDays);
             this.dailyFullDates = data.fullDates;
-            
-            if (this.dailyChart) {
-                this.dailyChart.destroy();
-            }
-            
+
+            this.dailyChart?.destroy();
             this.dailyChart = new Chart(canvas, {
                 type: 'line',
                 data: {
@@ -570,29 +387,25 @@ class DiaryNavigatorView extends ItemView {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    onClick: (event, elements) => {
-                        if (elements && elements.length > 0) {
-                            const index = elements[0].index;
-                            const dateStr = this.dailyFullDates[index];
-                            this.openDiaryFile(dateStr);
+                    onClick: (_event, elements) => {
+                        if (elements.length > 0) {
+                            this.openDiaryFile(this.dailyFullDates[elements[0].index]);
                         }
                     },
                     plugins: {
                         legend: {
-                            display: true,
-                            position: 'top'
+                            display: false
                         },
                         tooltip: {
                             callbacks: {
-                                label: (context) => {
-                                    const value = context.parsed.y ?? 0;
-                                    return `字数: ${value.toLocaleString()}`;
-                                },
-                                title: (context) => {
-                                    const index = context[0].dataIndex;
-                                    return this.dailyFullDates[index];
-                                }
+                                label: (context) => `字数: ${(context.parsed.y ?? 0).toLocaleString()}`,
+                                title: (context) => this.dailyFullDates[context[0].dataIndex]
                             }
+                        }
+                    },
+                    layout: {
+                        padding: {
+                            bottom: 0
                         }
                     },
                     scales: {
@@ -603,40 +416,41 @@ class DiaryNavigatorView extends ItemView {
                                 text: '字数'
                             },
                             ticks: {
-                                callback: (value) => {
-                                    return Number(value).toLocaleString();
-                                }
+                                callback: (value) => Number(value).toLocaleString()
                             }
                         },
                         x: {
+                            ticks: {
+                                padding: 2
+                            },
                             title: {
                                 display: true,
-                                text: '日期'
+                                text: '日期',
+                                padding: {
+                                    top: 2,
+                                    bottom: 0
+                                }
                             }
                         }
                     }
                 }
             });
-            
-            this.updateStats(data.counts, data.labels, data.fullDates);
-            
+
+            this.updateStats(data.counts, data.fullDates);
         } catch (error) {
             console.error('刷新每日图表时出错:', error);
         }
     }
 
     async refreshMonthlyChart() {
-        const canvas = document.getElementById('monthly-avg-chart') as HTMLCanvasElement;
+        const canvas = document.getElementById('monthly-avg-chart') as HTMLCanvasElement | null;
         if (!canvas) return;
-        
+
         try {
             const data = await this.getMonthlyAvgData();
             this.monthlyFullMonths = data.fullMonths;
-            
-            if (this.monthlyChart) {
-                this.monthlyChart.destroy();
-            }
-            
+
+            this.monthlyChart?.destroy();
             this.monthlyChart = new Chart(canvas, {
                 type: 'bar',
                 data: {
@@ -652,29 +466,25 @@ class DiaryNavigatorView extends ItemView {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    onClick: (event, elements) => {
-                        if (elements && elements.length > 0) {
-                            const index = elements[0].index;
-                            const monthStr = this.monthlyFullMonths[index];
-                            this.openMonthlySummary(monthStr);
+                    onClick: (_event, elements) => {
+                        if (elements.length > 0) {
+                            this.openMonthlySummary(this.monthlyFullMonths[elements[0].index]);
                         }
                     },
                     plugins: {
                         legend: {
-                            display: true,
-                            position: 'top'
+                            display: false
                         },
                         tooltip: {
                             callbacks: {
-                                label: (context) => {
-                                    const value = context.parsed.y ?? 0;
-                                    return `月均字数: ${Math.round(value).toLocaleString()}`;
-                                },
-                                title: (context) => {
-                                    const index = context[0].dataIndex;
-                                    return `${this.monthlyFullMonths[index]} 月均`;
-                                }
+                                label: (context) => `月均字数: ${Math.round(context.parsed.y ?? 0).toLocaleString()}`,
+                                title: (context) => `${this.monthlyFullMonths[context[0].dataIndex]} 月均`
                             }
+                        }
+                    },
+                    layout: {
+                        padding: {
+                            bottom: 0
                         }
                     },
                     scales: {
@@ -685,43 +495,252 @@ class DiaryNavigatorView extends ItemView {
                                 text: '平均字数'
                             },
                             ticks: {
-                                callback: (value) => {
-                                    return Number(value).toLocaleString();
-                                }
+                                callback: (value) => Number(value).toLocaleString()
                             }
                         },
                         x: {
+                            ticks: {
+                                padding: 2
+                            },
                             title: {
                                 display: true,
-                                text: '月份'
+                                text: '月份',
+                                padding: {
+                                    top: 2,
+                                    bottom: 0
+                                }
                             }
                         }
                     }
                 }
             });
-            
         } catch (error) {
             console.error('刷新月度图表时出错:', error);
         }
+    }
+
+    async loadHeatmap() {
+        if (!this.heatmapContainer) return;
+
+        const year = this.currentHeatmapYear;
+        const dailyCounts = await this.getYearlyHeatmapData(year);
+        const maxCount = Math.max(...Array.from(dailyCounts.values()), 0);
+        const metrics = this.getHeatmapLayoutMetrics(this.heatmapContainer.clientWidth || 960);
+        const { cellSize, gap, labelWidth, monthHeaderHeight } = metrics;
+
+        if (this.heatmapYearLabel) {
+            this.heatmapYearLabel.setText(`${year}年`);
+        }
+        if (this.heatmapDaysLabel) {
+            this.heatmapDaysLabel.setText(`已记录 ${dailyCounts.size} 天`);
+        }
+        if (this.heatmapPeakLabel) {
+            this.heatmapPeakLabel.setText(`峰值 ${maxCount.toLocaleString()} 字`);
+        }
+        if (this.heatmapNextBtn) {
+            this.heatmapNextBtn.disabled = year >= new Date().getFullYear();
+        }
+
+        const legendBoxes = Array.from(this.containerEl.querySelectorAll('[data-heatmap-legend]')) as HTMLElement[];
+        legendBoxes.forEach((box, index) => {
+            const ratio = [0, 0.25, 0.5, 0.75, 1][index] ?? 0;
+            box.style.backgroundColor = this.getHeatmapColor(Math.round(maxCount * ratio), maxCount);
+        });
+
+        this.heatmapContainer.empty();
+
+        const wrapper = this.heatmapContainer.createDiv('heatmap-layout');
+        wrapper.style.cssText = `
+            display: grid;
+            grid-template-columns: ${labelWidth}px 1fr;
+            gap: ${gap + 4}px;
+            align-items: start;
+            overflow-x: auto;
+        `;
+
+        const labelsColumn = wrapper.createDiv('heatmap-weekday-labels');
+        labelsColumn.style.cssText = `
+            display: grid;
+            grid-template-rows: repeat(7, ${cellSize}px);
+            gap: ${gap}px;
+            padding-top: ${monthHeaderHeight + 6}px;
+            color: var(--text-muted);
+            font-size: 11px;
+        `;
+        ['一', '', '三', '', '五', '', '日'].forEach((label) => {
+            const el = labelsColumn.createDiv('heatmap-weekday-label');
+            el.setText(label);
+            el.style.cssText = `
+                height: ${cellSize}px;
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                line-height: 1;
+            `;
+        });
+
+        const rightColumn = wrapper.createDiv('heatmap-right');
+        rightColumn.style.cssText = `
+            width: 100%;
+        `;
+
+        const monthHeader = rightColumn.createDiv('heatmap-month-header');
+        monthHeader.style.cssText = `
+            display: grid;
+            grid-template-columns: repeat(53, ${cellSize}px);
+            gap: ${gap}px;
+            margin-bottom: 6px;
+            color: var(--text-muted);
+            font-size: 11px;
+            min-height: ${monthHeaderHeight}px;
+        `;
+
+        const monthNames = new Array(53).fill('');
+        for (let month = 0; month < 12; month++) {
+            const monthDate = new Date(year, month, 1);
+            const col = this.getWeekIndexInYear(monthDate, year);
+            monthNames[col] = `${month + 1}月`;
+        }
+        monthNames.forEach((name) => {
+            const cell = monthHeader.createDiv('heatmap-month-cell');
+            cell.setText(name);
+        });
+
+        const grid = rightColumn.createDiv('heatmap-grid');
+        grid.style.cssText = `
+            display: grid;
+            grid-auto-flow: column;
+            grid-template-columns: repeat(53, ${cellSize}px);
+            grid-template-rows: repeat(7, ${cellSize}px);
+            gap: ${gap}px;
+        `;
+
+        for (let week = 0; week < 53; week++) {
+            for (let weekday = 0; weekday < 7; weekday++) {
+                const cellDate = this.getDateForWeekCell(year, week, weekday);
+                const cell = grid.createDiv('heatmap-cell');
+                cell.style.cssText = `
+                    width: ${cellSize}px;
+                    height: ${cellSize}px;
+                    border-radius: ${Math.max(3, Math.floor(cellSize / 3.5))}px;
+                    background-color: ${this.getHeatmapColor(this.getDateCount(dailyCounts, cellDate), maxCount)};
+                    border: 1px solid var(--background-modifier-border-hover);
+                    box-sizing: border-box;
+                    cursor: ${cellDate && this.getDateCount(dailyCounts, cellDate) > 0 ? 'pointer' : 'default'};
+                `;
+
+                if (!cellDate || cellDate.getFullYear() !== year) {
+                    cell.style.opacity = '0.22';
+                } else {
+                    const dateStr = this.formatDate(cellDate);
+                    const count = this.getDateCount(dailyCounts, cellDate);
+                    cell.setAttribute('title', `${dateStr} · ${count.toLocaleString()} 字`);
+                    if (count > 0) {
+                        cell.addEventListener('click', () => {
+                            this.openDiaryFile(dateStr);
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    async loadTodayHistory() {
+        if (!this.todayHistoryContainer) return;
+
+        this.todayHistoryContainer.empty();
+
+        const loadingItem = this.todayHistoryContainer.createDiv('loading-item');
+        loadingItem.setText('加载中...');
+        loadingItem.style.cssText = `
+            color: var(--text-muted);
+            text-align: center;
+            padding: 20px;
+        `;
+
+        const entries = await this.getTodayHistoryEntries();
+        this.todayHistoryContainer.empty();
+
+        if (entries.length === 0) {
+            const emptyItem = this.todayHistoryContainer.createDiv('empty-item');
+            emptyItem.setText('历史上这一天还没有找到日记记录');
+            emptyItem.style.cssText = `
+                color: var(--text-muted);
+                text-align: center;
+                padding: 20px;
+            `;
+            return;
+        }
+
+        entries.forEach((entry, index) => {
+            const item = this.todayHistoryContainer!.createDiv('history-item');
+            item.style.cssText = `
+                position: relative;
+                padding: 14px 16px;
+                background-color: var(--background-primary);
+                border-radius: 8px;
+                border-left: 4px solid ${index === 0 ? 'var(--interactive-accent)' : 'var(--background-modifier-border-hover)'};
+                cursor: pointer;
+                transition: all 0.2s ease;
+            `;
+
+            const titleRow = item.createDiv('history-item-title');
+            titleRow.style.cssText = `
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 8px;
+                flex-wrap: wrap;
+            `;
+            titleRow.createSpan({ text: `📅 ${entry.date}` });
+
+            const wordChip = titleRow.createSpan({ text: `${entry.wordCount.toLocaleString()} 字` });
+            wordChip.style.cssText = `
+                padding: 2px 8px;
+                border-radius: 999px;
+                background-color: var(--background-modifier-hover);
+                color: var(--text-muted);
+                font-size: 0.85em;
+            `;
+
+            const preview = item.createDiv('history-item-preview');
+            preview.innerHTML = this.escapeHtml(entry.preview).replace(/\n/g, '<br>');
+            preview.style.cssText = `
+                line-height: 1.7;
+                color: var(--text-normal);
+                font-size: 0.95em;
+            `;
+
+            item.addEventListener('mouseenter', () => {
+                item.style.transform = 'translateX(4px)';
+                item.style.backgroundColor = 'var(--background-secondary)';
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.transform = 'translateX(0)';
+                item.style.backgroundColor = 'var(--background-primary)';
+            });
+            item.addEventListener('click', () => {
+                this.openDiaryFile(entry.date);
+            });
+        });
     }
 
     async getDailyWordCountData(days: number) {
         const labels: string[] = [];
         const counts: number[] = [];
         const fullDates: string[] = [];
-        
+
         for (let i = days - 1; i >= 0; i--) {
             const date = new Date();
             date.setDate(date.getDate() - i);
             const dateStr = this.formatDate(date);
-            
+
             labels.push(dateStr.slice(5));
             fullDates.push(dateStr);
-            
-            const wordCount = await this.getWordCountForDate(dateStr);
-            counts.push(wordCount);
+            counts.push(await this.getWordCountForDate(dateStr));
         }
-        
+
         return { labels, counts, fullDates };
     }
 
@@ -729,131 +748,182 @@ class DiaryNavigatorView extends ItemView {
         const labels: string[] = [];
         const avgs: number[] = [];
         const fullMonths: string[] = [];
-        
+
         const months = await this.getAllMonths();
         months.sort();
-        
+
         for (const month of months) {
-            const [year, monthNum] = month.split('-');
+            const [, monthNum] = month.split('-');
             labels.push(`${monthNum}月`);
             fullMonths.push(month);
-            
-            const avg = await this.calculateMonthlyAverage(month);
-            avgs.push(avg);
+            avgs.push(await this.calculateMonthlyAverage(month));
         }
-        
+
         return { labels, avgs, fullMonths };
     }
 
     async getAllMonths(): Promise<string[]> {
-        const folderPath = this.plugin.settings.diaryFolder;
-        const months = new Set<string>();
-        
-        try {
-            const files = this.app.vault.getFiles();
-            
-            for (const file of files) {
-                if (file.path.startsWith(folderPath + '/') && file.extension === 'md') {
-                    const fileName = file.basename;
-                    if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-                        const month = fileName.slice(0, 7);
-                        months.add(month);
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('获取月份列表时出错:', error);
-        }
-        
-        return Array.from(months);
+        return Array.from(new Set(this.getDiaryFiles().map((file) => file.basename.slice(0, 7))));
     }
 
     async calculateMonthlyAverage(month: string): Promise<number> {
-        const folderPath = this.plugin.settings.diaryFolder;
         const [year, monthNum] = month.split('-');
-        const daysInMonth = new Date(parseInt(year), parseInt(monthNum), 0).getDate();
-        
+        const daysInMonth = new Date(parseInt(year, 10), parseInt(monthNum, 10), 0).getDate();
+
         let totalWords = 0;
         let daysWithContent = 0;
-        
+
         for (let day = 1; day <= daysInMonth; day++) {
             const dateStr = `${year}-${monthNum}-${String(day).padStart(2, '0')}`;
-            const filePath = `${folderPath}/${dateStr}.md`;
-            
-            try {
-                const file = this.app.vault.getAbstractFileByPath(filePath);
-                if (file && file instanceof TFile) {
-                    const content = await this.app.vault.read(file);
-                    const wordCount = this.countWords(content);
-                    if (wordCount > 0) {
-                        totalWords += wordCount;
-                        daysWithContent++;
-                    }
-                }
-            } catch (error) {
-                // 文件不存在，跳过
+            const wordCount = await this.getWordCountForDate(dateStr);
+            if (wordCount > 0) {
+                totalWords += wordCount;
+                daysWithContent++;
             }
         }
-        
+
         return daysWithContent > 0 ? totalWords / daysWithContent : 0;
     }
 
+    async getYearlyHeatmapData(year: number): Promise<Map<string, number>> {
+        const result = new Map<string, number>();
+        const diaryFiles = this.getDiaryFiles().filter((file) => file.basename.startsWith(`${year}-`));
+
+        for (const file of diaryFiles) {
+            result.set(file.basename, this.countWords(await this.app.vault.read(file)));
+        }
+
+        return result;
+    }
+
+    async getTodayHistoryEntries(): Promise<TodayHistoryEntry[]> {
+        const today = new Date();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const day = String(today.getDate()).padStart(2, '0');
+        const currentYear = today.getFullYear();
+        const suffix = `-${month}-${day}`;
+
+        const entries: TodayHistoryEntry[] = [];
+
+        for (const file of this.getDiaryFiles()) {
+            if (!file.basename.endsWith(suffix)) {
+                continue;
+            }
+
+            const entryYear = parseInt(file.basename.slice(0, 4), 10);
+            if (entryYear >= currentYear) {
+                continue;
+            }
+
+            const content = await this.app.vault.read(file);
+            const cleaned = this.stripFrontmatter(content).trim();
+            entries.push({
+                date: file.basename,
+                year: entryYear,
+                wordCount: this.countWords(content),
+                preview: this.createPreviewText(cleaned, 220)
+            });
+        }
+
+        return entries.sort((a, b) => b.year - a.year);
+    }
+
     async openDiaryFile(dateStr: string) {
-        const folderPath = this.plugin.settings.diaryFolder;
-        const filePath = `${folderPath}/${dateStr}.md`;
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (file && file instanceof TFile) {
+        const file = this.app.vault.getAbstractFileByPath(`${this.plugin.settings.diaryFolder}/${dateStr}.md`);
+        if (file instanceof TFile) {
             await this.app.workspace.getLeaf().openFile(file);
         }
     }
 
     async openMonthlySummary(monthStr: string) {
-        const folderPath = this.plugin.settings.diaryFolder;
-        const filePath = `${folderPath}/${monthStr}.md`;
-        
+        const filePath = `${this.plugin.settings.diaryFolder}/${monthStr}.md`;
         let file = this.app.vault.getAbstractFileByPath(filePath);
-        
+
         if (!file) {
             file = await this.app.vault.create(filePath, '');
         }
-        
-        if (file && file instanceof TFile) {
+
+        if (file instanceof TFile) {
             await this.app.workspace.getLeaf().openFile(file);
         }
     }
 
     async getWordCountForDate(dateStr: string): Promise<number> {
-        const folderPath = this.plugin.settings.diaryFolder;
-        const fileName = `${dateStr}.md`;
-        const filePath = `${folderPath}/${fileName}`;
-        
-        try {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file && file instanceof TFile) {
-                const content = await this.app.vault.read(file);
-                return this.countWords(content);
-            }
-        } catch (error) {
-            // 文件不存在，返回0
+        const file = this.app.vault.getAbstractFileByPath(`${this.plugin.settings.diaryFolder}/${dateStr}.md`);
+        if (!(file instanceof TFile)) {
+            return 0;
         }
-        
-        return 0;
+
+        try {
+            return this.countWords(await this.app.vault.read(file));
+        } catch {
+            return 0;
+        }
     }
 
     countWords(text: string): number {
-        text = text.replace(/^---[\s\S]*?---\n?/, '');
-        text = text.replace(/```[\s\S]*?```/g, '');
-        text = text.replace(/`[^`]*`/g, '');
-        text = text.replace(/!\[.*?\]\(.*?\)/g, '');
-        text = text.replace(/\[.*?\]\(.*?\)/g, '');
-        text = text.replace(/\[\[.*?\]\]/g, '');
-        text = text.replace(/[#*`~\[\]()_>|-]/g, ' ');
-        text = text.replace(/\s+/g, ' ').trim();
-        
-        const chineseChars = text.match(/[\u4e00-\u9fa5]/g) || [];
-        const englishWords = text.match(/[a-zA-Z0-9]+(?:[''-][a-zA-Z0-9]+)?/g) || [];
-        
-        return chineseChars.length + englishWords.length;
+        let normalized = text;
+        normalized = normalized.replace(/^---[\s\S]*?---\n?/u, '');
+        normalized = normalized.replace(/```[\s\S]*?```/gu, ' ');
+        normalized = normalized.replace(/`[^`]*`/gu, ' ');
+        normalized = normalized.replace(/!\[([^\]]*)\]\((.*?)\)/gu, ' $1 ');
+        normalized = normalized.replace(/\[([^\]]+)\]\((.*?)\)/gu, ' $1 ');
+        normalized = normalized.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/gu, ' $2 ');
+        normalized = normalized.replace(/\[\[([^\]]+)\]\]/gu, ' $1 ');
+        normalized = normalized.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/gmu, '');
+        normalized = normalized.replace(/[#*_~>|]/gu, ' ');
+        normalized = normalized.replace(/\s+/gu, ' ').trim();
+
+        const hanChars = normalized.match(/\p{Script=Han}/gu) ?? [];
+        const latinBase = normalized.replace(/\p{Script=Han}/gu, ' ');
+        const englishWords = latinBase.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g) ?? [];
+
+        return hanChars.length + englishWords.length;
+    }
+
+    stripFrontmatter(text: string): string {
+        return text.replace(/^---[\s\S]*?---\n?/u, '');
+    }
+
+    createPreviewText(text: string, maxLength: number) {
+        const flat = text
+            .replace(/\n{2,}/g, '\n')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .slice(0, 3)
+            .join('\n');
+
+        if (flat.length <= maxLength) {
+            return flat || '这一天写下了一些内容。';
+        }
+
+        return `${flat.slice(0, maxLength)}...`;
+    }
+
+    extractMemoryCandidateLines(text: string): string[] {
+        const cleaned = this.stripFrontmatter(text)
+            .replace(/```[\s\S]*?```/gu, '\n')
+            .replace(/!\[\[.*?\]\]/gu, '\n')
+            .replace(/!\[.*?\]\(.*?\)/gu, '\n')
+            .replace(/<img[\s\S]*?>/giu, '\n')
+            .replace(/<iframe[\s\S]*?<\/iframe>/giu, '\n');
+
+        return cleaned.split('\n')
+            .map((line) => line.trim())
+            .filter((line) => {
+                return line.length > 10
+                    && !line.startsWith('#')
+                    && !line.startsWith('- [ ]')
+                    && !line.startsWith('- [x]')
+                    && !/^[0-9]+\./.test(line)
+                    && !line.startsWith('>')
+                    && !line.startsWith('|')
+                    && !line.includes('```')
+                    && !line.includes('```chart')
+                    && !/^!\[\[.*\]\]$/.test(line)
+                    && !/^!\[.*\]\(.*\)$/.test(line);
+            });
     }
 
     formatDate(date: Date): string {
@@ -863,31 +933,104 @@ class DiaryNavigatorView extends ItemView {
         return `${year}-${month}-${day}`;
     }
 
+    getLastYearToday() {
+        const today = new Date();
+        const lastYearDate = new Date(today);
+        lastYearDate.setFullYear(today.getFullYear() - 1);
+        return lastYearDate;
+    }
+
+    getWeekIndexInYear(date: Date, year: number) {
+        const yearStart = new Date(year, 0, 1);
+        const offset = (yearStart.getDay() + 6) % 7;
+        const diffDays = Math.floor((date.getTime() - yearStart.getTime()) / 86400000);
+        return Math.floor((diffDays + offset) / 7);
+    }
+
+    getDateForWeekCell(year: number, weekIndex: number, weekdayIndex: number) {
+        const yearStart = new Date(year, 0, 1);
+        const offset = (yearStart.getDay() + 6) % 7;
+        const cellDayOffset = weekIndex * 7 + weekdayIndex - offset;
+        const cellDate = new Date(year, 0, 1);
+        cellDate.setDate(cellDate.getDate() + cellDayOffset);
+        return cellDate;
+    }
+
+    getHeatmapLayoutMetrics(containerWidth: number) {
+        const labelWidth = 36;
+        const minCellSize = 10;
+        const minGap = 2;
+        const usableWidth = Math.max(620, containerWidth - labelWidth - 16);
+
+        let cellSize = Math.floor((usableWidth - minGap * 52) / 53);
+        cellSize = Math.max(minCellSize, cellSize);
+
+        let gap = (usableWidth - cellSize * 53) / 52;
+        gap = Math.max(minGap, gap);
+
+        return {
+            cellSize,
+            gap,
+            labelWidth,
+            monthHeaderHeight: 22
+        };
+    }
+
+    getDateCount(dailyCounts: Map<string, number>, date: Date | null) {
+        if (!date) {
+            return 0;
+        }
+        return dailyCounts.get(this.formatDate(date)) ?? 0;
+    }
+
+    getHeatmapColor(count: number, maxCount: number) {
+        if (count <= 0 || maxCount <= 0) {
+            return 'var(--background-modifier-border)';
+        }
+
+        const ratio = count / maxCount;
+        if (ratio >= 0.85) return 'rgba(15, 118, 110, 0.95)';
+        if (ratio >= 0.6) return 'rgba(20, 184, 166, 0.85)';
+        if (ratio >= 0.35) return 'rgba(45, 212, 191, 0.7)';
+        if (ratio >= 0.15) return 'rgba(153, 246, 228, 0.7)';
+        return 'rgba(204, 251, 241, 0.7)';
+    }
+
     async getCurrentMonthWordCount(): Promise<number> {
         const now = new Date();
         const currentYear = now.getFullYear();
         const currentMonth = now.getMonth() + 1;
-        
-        let total = 0;
         const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
-        
+
+        let total = 0;
         for (let day = 1; day <= daysInMonth; day++) {
             const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-            const wordCount = await this.getWordCountForDate(dateStr);
-            total += wordCount;
+            total += await this.getWordCountForDate(dateStr);
         }
-        
+
         return total;
     }
 
-    updateStats(counts: number[], labels: string[], fullDates: string[]) {
-        const container = this.containerEl.children[1];
-        let statsDiv = container.querySelector('.word-count-stats') as HTMLElement;
-        
+    async getTodayWordCount(): Promise<number> {
+        return this.getWordCountForDate(this.formatDate(new Date()));
+    }
+
+    async getTotalWordCount(): Promise<number> {
+        let total = 0;
+        for (const file of this.getDiaryFiles()) {
+            total += this.countWords(await this.app.vault.read(file));
+        }
+        return total;
+    }
+
+    updateStats(counts: number[], fullDates: string[]) {
+        const container = this.containerEl.children[1] as HTMLElement;
+        let statsDiv = container.querySelector('.word-count-stats') as HTMLElement | null;
+
         if (!statsDiv) {
             statsDiv = container.createDiv('word-count-stats');
         }
-        
+
         statsDiv.empty();
         statsDiv.style.cssText = `
             padding: 16px;
@@ -896,33 +1039,45 @@ class DiaryNavigatorView extends ItemView {
             border: 1px solid var(--background-modifier-border);
             margin-bottom: 10px;
         `;
-        
-        const total = counts.reduce((sum, count) => sum + count, 0);
+
         const max = counts.length > 0 ? Math.max(...counts) : 0;
         const maxIndex = counts.indexOf(max);
         const maxDate = maxIndex >= 0 ? fullDates[maxIndex] : '';
-        
+
         Promise.all([
             this.getTotalDiaryCount(),
-            this.getCurrentMonthWordCount()
-        ]).then(([totalDiaryCount, monthTotal]) => {
-            statsDiv.createEl('h3', { text: '📈 统计信息' });
-            
-            const statsGrid = statsDiv.createDiv('stats-grid');
+            this.getTotalWordCount(),
+            this.getCurrentMonthWordCount(),
+            this.getTodayWordCount()
+        ]).then(([totalDiaryCount, totalWordCount, monthTotal, todayWordCount]) => {
+            this.createPanelHeader(statsDiv!, '📈 统计信息', (actionsEl) => {
+                const refreshBtn = actionsEl.createEl('button', {
+                    text: '🔄 刷新全部',
+                    cls: 'mod-cta'
+                });
+                refreshBtn.style.cssText = this.getButtonStyle();
+                refreshBtn.setAttribute('title', '刷新全部信息');
+                refreshBtn.addEventListener('click', () => {
+                    this.refreshAllCharts();
+                });
+            });
+
+            const statsGrid = statsDiv!.createDiv('stats-grid');
             statsGrid.style.cssText = `
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                 gap: 12px;
                 margin-top: 10px;
             `;
-            
+
             const stats = [
-                { label: '📚 总日记数', value: totalDiaryCount.toString() },
-                { label: '✍️ 总计字数', value: total.toLocaleString() },
-                { label: '📅 本月累计', value: monthTotal.toLocaleString() }
+                { label: '📘 总日记数', value: totalDiaryCount.toString() },
+                { label: '✍️ 总计字数', value: totalWordCount.toLocaleString() },
+                { label: '🗓️ 今日字数', value: todayWordCount.toLocaleString() },
+                { label: '📆 本月累计', value: monthTotal.toLocaleString() }
             ];
-            
-            stats.forEach(stat => {
+
+            stats.forEach((stat) => {
                 const statItem = statsGrid.createDiv('stat-item');
                 statItem.style.cssText = `
                     padding: 14px;
@@ -941,7 +1096,7 @@ class DiaryNavigatorView extends ItemView {
                     statItem.style.boxShadow = 'none';
                     statItem.style.borderColor = 'var(--background-modifier-border)';
                 });
-                
+
                 statItem.createDiv('stat-label').setText(stat.label);
                 const valueEl = statItem.createDiv('stat-value');
                 valueEl.setText(stat.value);
@@ -952,9 +1107,8 @@ class DiaryNavigatorView extends ItemView {
                     margin-top: 5px;
                 `;
             });
-            
-            // 最高单日
-            const maxDayDiv = statsDiv.createDiv('max-day-item');
+
+            const maxDayDiv = statsDiv!.createDiv('max-day-item');
             maxDayDiv.style.cssText = `
                 margin-top: 16px;
                 padding: 16px;
@@ -963,7 +1117,6 @@ class DiaryNavigatorView extends ItemView {
                 border: 1px solid var(--background-modifier-border);
                 transition: all 0.2s ease;
             `;
-            
             maxDayDiv.addEventListener('mouseenter', () => {
                 maxDayDiv.style.transform = 'translateY(-2px)';
                 maxDayDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
@@ -974,9 +1127,9 @@ class DiaryNavigatorView extends ItemView {
                 maxDayDiv.style.boxShadow = 'none';
                 maxDayDiv.style.borderColor = 'var(--background-modifier-border)';
             });
-            
+
             const maxLabelDiv = maxDayDiv.createDiv('max-label');
-            maxLabelDiv.setText('🏆 最高单日');
+            maxLabelDiv.setText('🏅 近期最高单日');
             maxLabelDiv.style.cssText = `
                 font-size: 0.9em;
                 color: var(--text-muted);
@@ -984,7 +1137,7 @@ class DiaryNavigatorView extends ItemView {
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
             `;
-            
+
             const maxValueDiv = maxDayDiv.createDiv('max-value-container');
             maxValueDiv.style.cssText = `
                 display: flex;
@@ -992,7 +1145,7 @@ class DiaryNavigatorView extends ItemView {
                 gap: 15px;
                 flex-wrap: wrap;
             `;
-            
+
             const maxValue = maxValueDiv.createSpan();
             maxValue.setText(`${max.toLocaleString()} 字`);
             maxValue.style.cssText = `
@@ -1000,7 +1153,7 @@ class DiaryNavigatorView extends ItemView {
                 font-weight: bold;
                 color: var(--text-accent);
             `;
-            
+
             if (maxDate) {
                 const maxLink = maxValueDiv.createEl('a', {
                     text: `📅 ${maxDate}`,
@@ -1027,54 +1180,148 @@ class DiaryNavigatorView extends ItemView {
                     await this.openDiaryFile(maxDate);
                 });
             }
+        }).catch((error) => {
+            console.error('更新统计信息时出错:', error);
+        });
+    }
+
+    async loadRandomMemories() {
+        if (!this.memoryContainer) return;
+
+        this.memoryContainer.empty();
+        for (let i = 0; i < 3; i++) {
+            const loadingItem = this.memoryContainer.createDiv('memory-item');
+            loadingItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                color: var(--text-muted);
+                border-left: 4px solid var(--interactive-accent);
+            `;
+            loadingItem.setText('加载中...');
+        }
+
+        const memories = await this.getRandomMemories(3);
+        this.memoryContainer.empty();
+
+        if (memories.length === 0) {
+            const emptyItem = this.memoryContainer.createDiv('memory-item');
+            emptyItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                color: var(--text-muted);
+                border-left: 4px solid var(--interactive-accent);
+            `;
+            emptyItem.setText('暂无日记记录，开始写日记吧！');
+            return;
+        }
+
+        memories.forEach((memory) => {
+            const memoryItem = this.memoryContainer!.createDiv('memory-item');
+            memoryItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                border-left: 4px solid var(--interactive-accent);
+            `;
+
+            const memoryText = memoryItem.createDiv('memory-text');
+            memoryText.setText(memory.text);
+            memoryText.style.cssText = `
+                font-size: 1em;
+                line-height: 1.6;
+                color: var(--text-normal);
+                margin-bottom: 6px;
+            `;
+
+            const memoryDate = memoryItem.createDiv('memory-date');
+            memoryDate.setText(`📅 ${memory.date}`);
+            memoryDate.style.cssText = `
+                font-size: 0.85em;
+                color: var(--text-muted);
+            `;
+
+            memoryItem.addEventListener('mouseenter', () => {
+                memoryItem.style.backgroundColor = 'var(--background-secondary)';
+                memoryItem.style.transform = 'translateX(4px)';
+            });
+            memoryItem.addEventListener('mouseleave', () => {
+                memoryItem.style.backgroundColor = 'var(--background-primary)';
+                memoryItem.style.transform = 'translateX(0)';
+            });
+            memoryItem.addEventListener('click', () => {
+                this.openDiaryFile(memory.date);
+            });
+        });
+    }
+
+    escapeHtml(text: string): string {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async getRandomMemories(count: number): Promise<Array<{ text: string; date: string }>> {
+        const diaryFiles = this.getDiaryFiles();
+        if (diaryFiles.length === 0) {
+            return [];
+        }
+
+        const allLines: Array<{ text: string; date: string }> = [];
+
+        for (const file of diaryFiles) {
+            const content = await this.app.vault.read(file);
+            const lines = this.extractMemoryCandidateLines(content);
+
+            lines.forEach((line) => {
+                allLines.push({
+                    text: line,
+                    date: file.basename
+                });
+            });
+        }
+
+        if (allLines.length === 0) {
+            return [];
+        }
+
+        const selected = new Set<number>();
+        const maxCount = Math.min(count, allLines.length);
+        while (selected.size < maxCount) {
+            selected.add(Math.floor(Math.random() * allLines.length));
+        }
+
+        return Array.from(selected).map((index) => allLines[index]);
+    }
+
+    getDiaryFiles(): TFile[] {
+        const folderPath = `${this.plugin.settings.diaryFolder}/`;
+        return this.app.vault.getFiles().filter((file) => {
+            return file.path.startsWith(folderPath)
+                && file.extension === 'md'
+                && /^\d{4}-\d{2}-\d{2}$/.test(file.basename);
         });
     }
 
     async getTotalDiaryCount(): Promise<number> {
-        const folderPath = this.plugin.settings.diaryFolder;
-        
-        try {
-            const files = this.app.vault.getFiles();
-            let count = 0;
-            
-            for (const file of files) {
-                if (file.path.startsWith(folderPath + '/') && file.extension === 'md') {
-                    const fileName = file.basename;
-                    if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-                        count++;
-                    }
-                }
-            }
-            
-            return count;
-        } catch (error) {
-            console.error('获取总日记数时出错:', error);
-            return 0;
-        }
-    }
-
-    async onClose() {
-        if (this.dailyChart) {
-            this.dailyChart.destroy();
-        }
-        if (this.monthlyChart) {
-            this.monthlyChart.destroy();
-        }
+        return this.getDiaryFiles().length;
     }
 }
 
-// 主插件类
 export default class DiaryNavigatorPlugin extends Plugin {
     settings: DailyWordCountSettings;
 
     async onload() {
         await this.loadSettings();
-        
+
         this.registerView(
             VIEW_TYPE_DIARY_NAVIGATOR,
             (leaf) => new DiaryNavigatorView(leaf, this)
         );
-        
+
         this.addCommand({
             id: 'open-diary-navigator',
             name: '打开日记导航器',
@@ -1082,13 +1329,12 @@ export default class DiaryNavigatorPlugin extends Plugin {
                 this.activateView();
             }
         });
-        
+
         this.addRibbonIcon('line-chart', 'Diary Navigator', () => {
             this.activateView();
         });
-        
+
         this.addSettingTab(new DiaryNavigatorSettingTab(this.app, this));
-        
         console.log('Diary Navigator 插件已加载');
     }
 
@@ -1098,20 +1344,19 @@ export default class DiaryNavigatorPlugin extends Plugin {
 
     async activateView() {
         const { workspace } = this.app;
-        
         let leaf = workspace.getLeavesOfType(VIEW_TYPE_DIARY_NAVIGATOR)[0];
-        
+
         if (!leaf) {
             const rightLeaf = workspace.getRightLeaf(false);
             if (rightLeaf) {
                 await rightLeaf.setViewState({
                     type: VIEW_TYPE_DIARY_NAVIGATOR,
-                    active: true,
+                    active: true
                 });
                 leaf = rightLeaf;
             }
         }
-        
+
         if (leaf) {
             workspace.revealLeaf(leaf);
         }
@@ -1126,7 +1371,6 @@ export default class DiaryNavigatorPlugin extends Plugin {
     }
 }
 
-// 设置选项卡
 class DiaryNavigatorSettingTab extends PluginSettingTab {
     plugin: DiaryNavigatorPlugin;
 
@@ -1138,30 +1382,30 @@ class DiaryNavigatorSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-        
+
         containerEl.createEl('h2', { text: '📊 日记字数统计设置' });
-        
+
         new Setting(containerEl)
             .setName('日记文件夹')
             .setDesc('存放日记文件的文件夹名称')
-            .addText(text => text
+            .addText((text) => text
                 .setPlaceholder('日记')
                 .setValue(this.plugin.settings.diaryFolder)
                 .onChange(async (value) => {
-                    this.plugin.settings.diaryFolder = value;
+                    this.plugin.settings.diaryFolder = value.trim() || '日记';
                     await this.plugin.saveSettings();
                 }));
-        
+
         new Setting(containerEl)
             .setName('日期格式')
             .setDesc('日记文件的命名格式（暂不支持修改）')
-            .addText(text => text
+            .addText((text) => text
                 .setPlaceholder('YYYY-MM-DD')
                 .setValue(this.plugin.settings.dateFormat)
                 .setDisabled(true));
-        
+
         containerEl.createEl('div', {
-            text: '💡 提示：点击折线图上的点可跳转到对应日记；点击柱状图可跳转到对应月份的总结文件（YYYY-MM.md）。',
+            text: '提示：折线图可直接打开对应日期日记，柱状图可直接打开对应月份总结文件，热力图与历史上的今天也都支持点击跳转。',
             cls: 'setting-item-description'
         }).style.cssText = 'margin-top: 20px; padding: 10px; background: var(--background-secondary); border-radius: 5px;';
     }

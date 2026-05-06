@@ -14514,11 +14514,20 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     this.dailyChart = null;
     this.monthlyChart = null;
     this.currentDays = 30;
+    this.currentHeatmapYear = (/* @__PURE__ */ new Date()).getFullYear();
     this.dailyFullDates = [];
     this.monthlyFullMonths = [];
     this.daysSelect = null;
     this.memoryContainer = null;
-    this.lastYearContainer = null;
+    this.heatmapContainer = null;
+    this.todayHistoryContainer = null;
+    this.heatmapYearLabel = null;
+    this.heatmapDaysLabel = null;
+    this.heatmapPeakLabel = null;
+    this.heatmapPrevBtn = null;
+    this.heatmapNextBtn = null;
+    this.heatmapResizeObserver = null;
+    this.heatmapResizeFrame = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -14534,7 +14543,78 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("word-count-chart-view");
-    const statsDiv = container.createDiv("word-count-stats");
+    container.createDiv("word-count-stats");
+    const heatmapSection = this.createCard(container, { minWidth: "100%" });
+    this.createPanelHeader(heatmapSection, "\u{1F5FA}\uFE0F \u5E74\u5EA6\u5199\u4F5C\u70ED\u529B\u56FE", (actionsEl) => {
+      actionsEl.style.cssText = `
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                flex-wrap: wrap;
+                margin-left: auto;
+            `;
+      const metaGroup = actionsEl.createDiv("heatmap-meta-group");
+      metaGroup.style.cssText = `
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+                color: var(--text-muted);
+                font-size: 12px;
+            `;
+      this.heatmapDaysLabel = metaGroup.createSpan({ text: "\u5DF2\u8BB0\u5F55 0 \u5929" });
+      this.heatmapPeakLabel = metaGroup.createSpan({ text: "\u5CF0\u503C 0 \u5B57" });
+      const legend = metaGroup.createDiv("heatmap-inline-legend");
+      legend.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            `;
+      legend.createSpan({ text: "\u5C11" });
+      for (let i = 0; i < 5; i++) {
+        const box = legend.createDiv("heatmap-legend-box");
+        box.style.cssText = `
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 4px;
+                    border: 1px solid var(--background-modifier-border-hover);
+                `;
+        box.setAttribute("data-heatmap-legend", i.toString());
+      }
+      legend.createSpan({ text: "\u591A" });
+      const yearSwitch = actionsEl.createDiv("heatmap-year-switch");
+      yearSwitch.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            `;
+      this.heatmapPrevBtn = yearSwitch.createEl("button", { text: "\u2190" });
+      this.heatmapPrevBtn.style.cssText = this.getCompactButtonStyle();
+      this.heatmapPrevBtn.addEventListener("click", async () => {
+        this.currentHeatmapYear--;
+        await this.loadHeatmap();
+      });
+      this.heatmapYearLabel = yearSwitch.createSpan({ text: `${this.currentHeatmapYear}\u5E74` });
+      this.heatmapYearLabel.style.cssText = `
+                min-width: 56px;
+                text-align: center;
+                font-weight: 600;
+            `;
+      this.heatmapNextBtn = yearSwitch.createEl("button", { text: "\u2192" });
+      this.heatmapNextBtn.style.cssText = this.getCompactButtonStyle();
+      this.heatmapNextBtn.addEventListener("click", async () => {
+        const currentYear = (/* @__PURE__ */ new Date()).getFullYear();
+        if (this.currentHeatmapYear < currentYear) {
+          this.currentHeatmapYear++;
+          await this.loadHeatmap();
+        }
+      });
+    });
+    this.heatmapContainer = heatmapSection.createDiv("heatmap-container");
+    this.heatmapContainer.style.cssText = `
+            margin-top: 8px;
+        `;
+    this.setupHeatmapResizeObserver();
     const chartsWrapper = container.createDiv("charts-wrapper");
     chartsWrapper.style.cssText = `
             display: flex;
@@ -14542,85 +14622,36 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
             margin-top: 20px;
             flex-wrap: wrap;
         `;
-    const dailyChartSection = chartsWrapper.createDiv("daily-chart-section");
-    dailyChartSection.style.cssText = `
-            flex: 1;
-            min-width: 400px;
-            padding: 16px;
-            background-color: var(--background-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-    const dailyHeader = dailyChartSection.createDiv("daily-header");
-    dailyHeader.style.cssText = `
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        `;
-    dailyHeader.createEl("h3", { text: "\u{1F4C8} \u6BCF\u65E5\u5B57\u6570\u8D8B\u52BF" });
-    const controlsGroup = dailyHeader.createDiv("controls-group");
-    controlsGroup.style.cssText = `
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        `;
-    const refreshBtn = controlsGroup.createEl("button", {
-      text: "\u{1F504}",
-      cls: "mod-cta"
-    });
-    refreshBtn.style.cssText = `
-            padding: 4px 8px;
-            font-size: 14px;
-        `;
-    refreshBtn.setAttribute("title", "\u5237\u65B0\u6570\u636E");
-    refreshBtn.addEventListener("click", () => {
-      this.refreshAllCharts();
-    });
-    this.daysSelect = controlsGroup.createEl("select");
-    this.daysSelect.style.cssText = `
-            padding: 4px 8px;
-            font-size: 14px;
-            border-radius: 4px;
-            background-color: var(--background-modifier-form-field);
-            border: 1px solid var(--background-modifier-border);
-        `;
-    [7, 14, 30, 60, 90].forEach((days) => {
-      const option = this.daysSelect.createEl("option", {
-        text: `${days}\u5929`,
-        value: days.toString()
+    const dailyChartSection = this.createCard(chartsWrapper, { minWidth: "400px" });
+    this.createPanelHeader(dailyChartSection, "\u{1F4C8} \u6BCF\u65E5\u5B57\u6570\u8D8B\u52BF", (actionsEl) => {
+      this.daysSelect = actionsEl.createEl("select");
+      this.daysSelect.style.cssText = this.getControlStyle();
+      [7, 14, 30, 60, 90].forEach((days) => {
+        const option = this.daysSelect.createEl("option", {
+          text: `${days}\u5929`,
+          value: days.toString()
+        });
+        option.selected = days === this.currentDays;
       });
-      if (days === 30)
-        option.selected = true;
-    });
-    this.daysSelect.addEventListener("change", (e) => {
-      this.currentDays = parseInt(e.target.value);
-      this.refreshDailyChart();
+      this.daysSelect.addEventListener("change", (event) => {
+        this.currentDays = parseInt(event.target.value, 10);
+        this.refreshDailyChart();
+      });
     });
     const dailyChartContainer = dailyChartSection.createDiv("chart-container");
     dailyChartContainer.style.cssText = `
-            height: 300px;
+            height: 240px;
             margin-top: 10px;
         `;
-    const dailyCanvas = dailyChartContainer.createEl("canvas");
-    dailyCanvas.id = "daily-word-chart";
-    const monthlyChartSection = chartsWrapper.createDiv("monthly-chart-section");
-    monthlyChartSection.style.cssText = `
-            flex: 1;
-            min-width: 400px;
-            padding: 16px;
-            background-color: var(--background-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-    monthlyChartSection.createEl("h3", { text: "\u{1F4CA} \u6708\u5EA6\u5E73\u5747\u5B57\u6570" });
+    dailyChartContainer.createEl("canvas", { attr: { id: "daily-word-chart" } });
+    const monthlyChartSection = this.createCard(chartsWrapper, { minWidth: "400px" });
+    this.createPanelHeader(monthlyChartSection, "\u{1F4CA} \u6708\u5EA6\u5E73\u5747\u5B57\u6570");
     const monthlyChartContainer = monthlyChartSection.createDiv("chart-container");
     monthlyChartContainer.style.cssText = `
-            height: 300px;
+            height: 240px;
             margin-top: 10px;
         `;
-    const monthlyCanvas = monthlyChartContainer.createEl("canvas");
-    monthlyCanvas.id = "monthly-avg-chart";
+    monthlyChartContainer.createEl("canvas", { attr: { id: "monthly-avg-chart" } });
     const memoryWrapper = container.createDiv("memory-wrapper");
     memoryWrapper.style.cssText = `
             display: flex;
@@ -14628,286 +14659,146 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
             margin-top: 20px;
             flex-wrap: wrap;
         `;
-    const memorySection = memoryWrapper.createDiv("memory-section");
-    memorySection.style.cssText = `
-            flex: 1;
-            min-width: 350px;
-            padding: 16px;
-            background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-    const memoryHeader = memorySection.createDiv("memory-header");
-    memoryHeader.style.cssText = `
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        `;
-    memoryHeader.createEl("h3", { text: "\u{1F4DC} \u56DE\u5FC6\u6F2B\u6E38" });
-    const refreshMemoryBtn = memoryHeader.createEl("button", {
-      text: "\u{1F504} \u6362\u4E00\u6279",
-      cls: "mod-cta"
+    const memorySection = this.createCard(memoryWrapper, {
+      minWidth: "350px",
+      background: "linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%)"
     });
-    refreshMemoryBtn.style.cssText = `
-            padding: 4px 12px;
-            font-size: 14px;
-        `;
+    this.createPanelHeader(memorySection, "\u{1F390} \u56DE\u5FC6\u6F2B\u6E38", (actionsEl) => {
+      const refreshMemoryBtn = actionsEl.createEl("button", {
+        text: "\u{1F3B2} \u6362\u4E00\u6279",
+        cls: "mod-cta"
+      });
+      refreshMemoryBtn.style.cssText = this.getButtonStyle();
+      refreshMemoryBtn.addEventListener("click", () => {
+        this.loadRandomMemories();
+      });
+    });
     this.memoryContainer = memorySection.createDiv("memory-container");
     this.memoryContainer.style.cssText = `
             display: flex;
             flex-direction: column;
             gap: 12px;
         `;
-    const lastYearSection = memoryWrapper.createDiv("last-year-section");
-    lastYearSection.style.cssText = `
-            flex: 1;
-            min-width: 350px;
-            padding: 16px;
-            background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%);
-            border-radius: 8px;
-            border: 1px solid var(--background-modifier-border);
-        `;
-    const lastYearHeader = lastYearSection.createDiv("last-year-header");
-    lastYearHeader.style.cssText = `
+    const todayHistorySection = this.createCard(memoryWrapper, {
+      minWidth: "350px",
+      background: "linear-gradient(135deg, var(--background-primary) 0%, var(--background-secondary) 100%)"
+    });
+    const lastYearStr = this.formatDate(this.getLastYearToday());
+    this.createPanelHeader(todayHistorySection, `\u{1F570}\uFE0F \u5F80\u5E74\u4ECA\u65E5 (${lastYearStr.slice(5)})`, (actionsEl) => {
+      const openLastYearBtn = actionsEl.createEl("button", {
+        text: "\u{1F4D6} \u53BB\u5E74\u4ECA\u65E5",
+        cls: "mod-cta"
+      });
+      openLastYearBtn.style.cssText = this.getButtonStyle();
+      openLastYearBtn.addEventListener("click", () => {
+        this.openDiaryFile(lastYearStr);
+      });
+    });
+    this.todayHistoryContainer = todayHistorySection.createDiv("today-history-container");
+    this.todayHistoryContainer.style.cssText = `
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
+            flex-direction: column;
+            gap: 12px;
         `;
-    const today = /* @__PURE__ */ new Date();
-    const lastYearDate = new Date(today);
-    lastYearDate.setFullYear(today.getFullYear() - 1);
-    const lastYearStr = this.formatDate(lastYearDate);
-    lastYearHeader.createEl("h3", { text: `\u{1F4C5} \u53BB\u5E74\u4ECA\u65E5 (${lastYearStr})` });
-    const openLastYearBtn = lastYearHeader.createEl("button", {
-      text: "\u{1F4DD} \u6253\u5F00",
-      cls: "mod-cta"
-    });
-    openLastYearBtn.style.cssText = `
-            padding: 4px 12px;
-            font-size: 14px;
-        `;
-    openLastYearBtn.addEventListener("click", () => {
-      this.openDiaryFile(lastYearStr);
-    });
-    this.lastYearContainer = lastYearSection.createDiv("last-year-container");
-    this.lastYearContainer.style.cssText = `
-            padding: 12px;
-            background-color: var(--background-primary);
-            border-radius: 6px;
-            min-height: 200px;
-            max-height: 400px;
-            overflow-y: auto;
-        `;
-    const loadRandomMemories = async () => {
-      if (!this.memoryContainer)
-        return;
-      this.memoryContainer.empty();
-      for (let i = 0; i < 3; i++) {
-        const loadingItem = this.memoryContainer.createDiv("memory-item");
-        loadingItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    color: var(--text-muted);
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-        loadingItem.setText("\u52A0\u8F7D\u4E2D...");
-      }
-      const memories = await this.getRandomMemories(3);
-      this.memoryContainer.empty();
-      if (memories.length === 0) {
-        const emptyItem = this.memoryContainer.createDiv("memory-item");
-        emptyItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    color: var(--text-muted);
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-        emptyItem.setText("\u6682\u65E0\u65E5\u8BB0\u8BB0\u5F55\uFF0C\u5F00\u59CB\u5199\u65E5\u8BB0\u5427\uFF01");
-        return;
-      }
-      memories.forEach((memory) => {
-        const memoryItem = this.memoryContainer.createDiv("memory-item");
-        memoryItem.style.cssText = `
-                    padding: 12px 16px;
-                    background-color: var(--background-primary);
-                    border-radius: 6px;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    border-left: 4px solid var(--interactive-accent);
-                `;
-        const memoryText = memoryItem.createDiv("memory-text");
-        memoryText.setText(memory.text);
-        memoryText.style.cssText = `
-                    font-size: 1em;
-                    line-height: 1.6;
-                    color: var(--text-normal);
-                    margin-bottom: 6px;
-                `;
-        const memoryDate = memoryItem.createDiv("memory-date");
-        memoryDate.setText(`\u{1F4C5} ${memory.date}`);
-        memoryDate.style.cssText = `
-                    font-size: 0.85em;
-                    color: var(--text-muted);
-                `;
-        memoryItem.addEventListener("mouseenter", () => {
-          memoryItem.style.backgroundColor = "var(--background-secondary)";
-          memoryItem.style.transform = "translateX(4px)";
-        });
-        memoryItem.addEventListener("mouseleave", () => {
-          memoryItem.style.backgroundColor = "var(--background-primary)";
-          memoryItem.style.transform = "translateX(0)";
-        });
-        const dateToOpen = memory.date;
-        memoryItem.addEventListener("click", () => {
-          this.openDiaryFile(dateToOpen);
-        });
-      });
-    };
-    const loadLastYearDiary = async () => {
-      if (!this.lastYearContainer)
-        return;
-      this.lastYearContainer.empty();
-      const loadingItem = this.lastYearContainer.createDiv("loading-item");
-      loadingItem.setText("\u52A0\u8F7D\u4E2D...");
-      loadingItem.style.cssText = `
-                color: var(--text-muted);
-                text-align: center;
-                padding: 20px;
-            `;
-      const lastYearContent = await this.getLastYearDiary();
-      this.lastYearContainer.empty();
-      if (!lastYearContent) {
-        const emptyItem = this.lastYearContainer.createDiv("empty-item");
-        emptyItem.setText("\u53BB\u5E74\u7684\u4ECA\u5929\u6CA1\u6709\u5199\u65E5\u8BB0");
-        emptyItem.style.cssText = `
-                    color: var(--text-muted);
-                    text-align: center;
-                    padding: 20px;
-                `;
-        return;
-      }
-      const previewDiv = this.lastYearContainer.createDiv("preview-content");
-      previewDiv.style.cssText = `
-                line-height: 1.8;
-                color: var(--text-normal);
-                cursor: pointer;
-            `;
-      const previewText = lastYearContent.length > 500 ? lastYearContent.substring(0, 500) + "..." : lastYearContent;
-      const escapedText = this.escapeHtml(previewText);
-      previewDiv.innerHTML = escapedText.replace(/\n/g, "<br>");
-      const wordCount = this.countWords(lastYearContent);
-      const wordCountDiv = this.lastYearContainer.createDiv("word-count");
-      wordCountDiv.style.cssText = `
-                margin-top: 12px;
-                padding-top: 12px;
-                border-top: 1px solid var(--background-modifier-border);
-                font-size: 0.9em;
-                color: var(--text-muted);
-            `;
-      wordCountDiv.setText(`\u{1F4DD} \u5171 ${wordCount.toLocaleString()} \u5B57`);
-      previewDiv.addEventListener("click", () => {
-        const today2 = /* @__PURE__ */ new Date();
-        const lastYearDate2 = new Date(today2);
-        lastYearDate2.setFullYear(today2.getFullYear() - 1);
-        const lastYearStr2 = this.formatDate(lastYearDate2);
-        this.openDiaryFile(lastYearStr2);
-      });
-      previewDiv.addEventListener("mouseenter", () => {
-        previewDiv.style.backgroundColor = "var(--background-secondary)";
-      });
-      previewDiv.addEventListener("mouseleave", () => {
-        previewDiv.style.backgroundColor = "transparent";
-      });
-    };
-    refreshMemoryBtn.addEventListener("click", loadRandomMemories);
     const loadingDiv = container.createDiv("loading-indicator");
     loadingDiv.setText("\u52A0\u8F7D\u6570\u636E\u4E2D...");
     loadingDiv.style.cssText = "text-align: center; padding: 20px; color: var(--text-muted);";
-    setTimeout(async () => {
-      if (loadingDiv)
-        loadingDiv.remove();
+    window.setTimeout(async () => {
+      loadingDiv.remove();
       await this.refreshAllCharts();
-      await loadRandomMemories();
-      await loadLastYearDiary();
     }, 100);
   }
-  escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
-  async getLastYearDiary() {
-    const today = /* @__PURE__ */ new Date();
-    const lastYearDate = new Date(today);
-    lastYearDate.setFullYear(today.getFullYear() - 1);
-    const lastYearStr = this.formatDate(lastYearDate);
-    const folderPath = this.plugin.settings.diaryFolder;
-    const filePath = `${folderPath}/${lastYearStr}.md`;
-    try {
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (file && file instanceof import_obsidian.TFile) {
-        const content = await this.app.vault.read(file);
-        const contentWithoutFrontmatter = content.replace(/^---[\s\S]*?---\n?/, "").trim();
-        return contentWithoutFrontmatter;
-      }
-    } catch (error) {
-      console.error("\u8BFB\u53D6\u53BB\u5E74\u4ECA\u65E5\u65E5\u8BB0\u65F6\u51FA\u9519:", error);
+  async onClose() {
+    var _a, _b, _c;
+    (_a = this.dailyChart) == null ? void 0 : _a.destroy();
+    (_b = this.monthlyChart) == null ? void 0 : _b.destroy();
+    (_c = this.heatmapResizeObserver) == null ? void 0 : _c.disconnect();
+    if (this.heatmapResizeFrame !== null) {
+      cancelAnimationFrame(this.heatmapResizeFrame);
+      this.heatmapResizeFrame = null;
     }
-    return null;
   }
-  async getRandomMemories(count) {
-    const folderPath = this.plugin.settings.diaryFolder;
-    const memories = [];
-    try {
-      const files = this.app.vault.getFiles();
-      const diaryFiles = [];
-      for (const file of files) {
-        if (file.path.startsWith(folderPath + "/") && file.extension === "md") {
-          const fileName = file.basename;
-          if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-            diaryFiles.push(file);
-          }
-        }
-      }
-      if (diaryFiles.length === 0) {
-        return [];
-      }
-      const allLines = [];
-      for (const file of diaryFiles) {
-        const content = await this.app.vault.read(file);
-        const dateStr = file.basename;
-        const lines = content.split("\n").map((line) => line.trim()).filter((line) => {
-          return line.length > 0 && !line.startsWith("#") && !line.startsWith("---") && !line.startsWith("```") && !line.startsWith("- [ ]") && !line.startsWith("- [x]") && !line.match(/^[0-9]+\./) && !line.startsWith(">") && line.length > 10;
-        });
-        for (const line of lines) {
-          allLines.push({
-            text: line,
-            date: dateStr
-          });
-        }
-      }
-      if (allLines.length === 0) {
-        return [];
-      }
-      const selected = /* @__PURE__ */ new Set();
-      const maxCount = Math.min(count, allLines.length);
-      while (selected.size < maxCount) {
-        const randomIndex = Math.floor(Math.random() * allLines.length);
-        selected.add(randomIndex);
-      }
-      const selectedIndices = Array.from(selected);
-      for (const index2 of selectedIndices) {
-        memories.push(allLines[index2]);
-      }
-      return memories;
-    } catch (error) {
-      console.error("\u83B7\u53D6\u968F\u673A\u56DE\u5FC6\u65F6\u51FA\u9519:", error);
-      return [];
+  createCard(container, options) {
+    var _a, _b;
+    const card = container.createDiv();
+    card.style.cssText = `
+            flex: 1;
+            min-width: ${(_a = options == null ? void 0 : options.minWidth) != null ? _a : "400px"};
+            padding: 16px;
+            background: ${(_b = options == null ? void 0 : options.background) != null ? _b : "var(--background-secondary)"};
+            border-radius: 8px;
+            border: 1px solid var(--background-modifier-border);
+        `;
+    return card;
+  }
+  createPanelHeader(container, title, buildActions) {
+    const header = container.createDiv("section-header");
+    header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        `;
+    const titleEl = header.createEl("h3", { text: title });
+    titleEl.style.cssText = `
+            margin: 0;
+            line-height: 1.2;
+        `;
+    if (buildActions) {
+      const actionsEl = header.createDiv("section-actions");
+      actionsEl.style.cssText = `
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+            `;
+      buildActions(actionsEl);
     }
+    return header;
+  }
+  getButtonStyle() {
+    return `
+            padding: 6px 12px;
+            font-size: 14px;
+        `;
+  }
+  getCompactButtonStyle() {
+    return `
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        `;
+  }
+  setupHeatmapResizeObserver() {
+    var _a;
+    (_a = this.heatmapResizeObserver) == null ? void 0 : _a.disconnect();
+    if (!this.heatmapContainer)
+      return;
+    this.heatmapResizeObserver = new ResizeObserver(() => {
+      if (this.heatmapResizeFrame !== null) {
+        cancelAnimationFrame(this.heatmapResizeFrame);
+      }
+      this.heatmapResizeFrame = requestAnimationFrame(() => {
+        this.heatmapResizeFrame = null;
+        this.loadHeatmap();
+      });
+    });
+    this.heatmapResizeObserver.observe(this.heatmapContainer);
+  }
+  getControlStyle() {
+    return `
+            padding: 4px 8px;
+            font-size: 14px;
+            border-radius: 4px;
+            background-color: var(--background-modifier-form-field);
+            border: 1px solid var(--background-modifier-border);
+        `;
   }
   async refreshAllCharts() {
     if (this.daysSelect) {
@@ -14915,17 +14806,19 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     }
     await this.refreshDailyChart();
     await this.refreshMonthlyChart();
+    await this.loadHeatmap();
+    await this.loadRandomMemories();
+    await this.loadTodayHistory();
   }
   async refreshDailyChart() {
+    var _a;
     const canvas = document.getElementById("daily-word-chart");
     if (!canvas)
       return;
     try {
       const data = await this.getDailyWordCountData(this.currentDays);
       this.dailyFullDates = data.fullDates;
-      if (this.dailyChart) {
-        this.dailyChart.destroy();
-      }
+      (_a = this.dailyChart) == null ? void 0 : _a.destroy();
       this.dailyChart = new Chart(canvas, {
         type: "line",
         data: {
@@ -14944,30 +14837,28 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          onClick: (event, elements2) => {
-            if (elements2 && elements2.length > 0) {
-              const index2 = elements2[0].index;
-              const dateStr = this.dailyFullDates[index2];
-              this.openDiaryFile(dateStr);
+          onClick: (_event, elements2) => {
+            if (elements2.length > 0) {
+              this.openDiaryFile(this.dailyFullDates[elements2[0].index]);
             }
           },
           plugins: {
             legend: {
-              display: true,
-              position: "top"
+              display: false
             },
             tooltip: {
               callbacks: {
                 label: (context) => {
-                  var _a;
-                  const value = (_a = context.parsed.y) != null ? _a : 0;
-                  return `\u5B57\u6570: ${value.toLocaleString()}`;
+                  var _a2;
+                  return `\u5B57\u6570: ${((_a2 = context.parsed.y) != null ? _a2 : 0).toLocaleString()}`;
                 },
-                title: (context) => {
-                  const index2 = context[0].dataIndex;
-                  return this.dailyFullDates[index2];
-                }
+                title: (context) => this.dailyFullDates[context[0].dataIndex]
               }
+            }
+          },
+          layout: {
+            padding: {
+              bottom: 0
             }
           },
           scales: {
@@ -14978,35 +14869,39 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
                 text: "\u5B57\u6570"
               },
               ticks: {
-                callback: (value) => {
-                  return Number(value).toLocaleString();
-                }
+                callback: (value) => Number(value).toLocaleString()
               }
             },
             x: {
+              ticks: {
+                padding: 2
+              },
               title: {
                 display: true,
-                text: "\u65E5\u671F"
+                text: "\u65E5\u671F",
+                padding: {
+                  top: 2,
+                  bottom: 0
+                }
               }
             }
           }
         }
       });
-      this.updateStats(data.counts, data.labels, data.fullDates);
+      this.updateStats(data.counts, data.fullDates);
     } catch (error) {
       console.error("\u5237\u65B0\u6BCF\u65E5\u56FE\u8868\u65F6\u51FA\u9519:", error);
     }
   }
   async refreshMonthlyChart() {
+    var _a;
     const canvas = document.getElementById("monthly-avg-chart");
     if (!canvas)
       return;
     try {
       const data = await this.getMonthlyAvgData();
       this.monthlyFullMonths = data.fullMonths;
-      if (this.monthlyChart) {
-        this.monthlyChart.destroy();
-      }
+      (_a = this.monthlyChart) == null ? void 0 : _a.destroy();
       this.monthlyChart = new Chart(canvas, {
         type: "bar",
         data: {
@@ -15022,30 +14917,28 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          onClick: (event, elements2) => {
-            if (elements2 && elements2.length > 0) {
-              const index2 = elements2[0].index;
-              const monthStr = this.monthlyFullMonths[index2];
-              this.openMonthlySummary(monthStr);
+          onClick: (_event, elements2) => {
+            if (elements2.length > 0) {
+              this.openMonthlySummary(this.monthlyFullMonths[elements2[0].index]);
             }
           },
           plugins: {
             legend: {
-              display: true,
-              position: "top"
+              display: false
             },
             tooltip: {
               callbacks: {
                 label: (context) => {
-                  var _a;
-                  const value = (_a = context.parsed.y) != null ? _a : 0;
-                  return `\u6708\u5747\u5B57\u6570: ${Math.round(value).toLocaleString()}`;
+                  var _a2;
+                  return `\u6708\u5747\u5B57\u6570: ${Math.round((_a2 = context.parsed.y) != null ? _a2 : 0).toLocaleString()}`;
                 },
-                title: (context) => {
-                  const index2 = context[0].dataIndex;
-                  return `${this.monthlyFullMonths[index2]} \u6708\u5747`;
-                }
+                title: (context) => `${this.monthlyFullMonths[context[0].dataIndex]} \u6708\u5747`
               }
+            }
+          },
+          layout: {
+            padding: {
+              bottom: 0
             }
           },
           scales: {
@@ -15056,15 +14949,20 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
                 text: "\u5E73\u5747\u5B57\u6570"
               },
               ticks: {
-                callback: (value) => {
-                  return Number(value).toLocaleString();
-                }
+                callback: (value) => Number(value).toLocaleString()
               }
             },
             x: {
+              ticks: {
+                padding: 2
+              },
               title: {
                 display: true,
-                text: "\u6708\u4EFD"
+                text: "\u6708\u4EFD",
+                padding: {
+                  top: 2,
+                  bottom: 0
+                }
               }
             }
           }
@@ -15073,6 +14971,193 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     } catch (error) {
       console.error("\u5237\u65B0\u6708\u5EA6\u56FE\u8868\u65F6\u51FA\u9519:", error);
     }
+  }
+  async loadHeatmap() {
+    if (!this.heatmapContainer)
+      return;
+    const year = this.currentHeatmapYear;
+    const dailyCounts = await this.getYearlyHeatmapData(year);
+    const maxCount = Math.max(...Array.from(dailyCounts.values()), 0);
+    const metrics = this.getHeatmapLayoutMetrics(this.heatmapContainer.clientWidth || 960);
+    const { cellSize, gap, labelWidth, monthHeaderHeight } = metrics;
+    if (this.heatmapYearLabel) {
+      this.heatmapYearLabel.setText(`${year}\u5E74`);
+    }
+    if (this.heatmapDaysLabel) {
+      this.heatmapDaysLabel.setText(`\u5DF2\u8BB0\u5F55 ${dailyCounts.size} \u5929`);
+    }
+    if (this.heatmapPeakLabel) {
+      this.heatmapPeakLabel.setText(`\u5CF0\u503C ${maxCount.toLocaleString()} \u5B57`);
+    }
+    if (this.heatmapNextBtn) {
+      this.heatmapNextBtn.disabled = year >= (/* @__PURE__ */ new Date()).getFullYear();
+    }
+    const legendBoxes = Array.from(this.containerEl.querySelectorAll("[data-heatmap-legend]"));
+    legendBoxes.forEach((box, index2) => {
+      var _a;
+      const ratio = (_a = [0, 0.25, 0.5, 0.75, 1][index2]) != null ? _a : 0;
+      box.style.backgroundColor = this.getHeatmapColor(Math.round(maxCount * ratio), maxCount);
+    });
+    this.heatmapContainer.empty();
+    const wrapper = this.heatmapContainer.createDiv("heatmap-layout");
+    wrapper.style.cssText = `
+            display: grid;
+            grid-template-columns: ${labelWidth}px 1fr;
+            gap: ${gap + 4}px;
+            align-items: start;
+            overflow-x: auto;
+        `;
+    const labelsColumn = wrapper.createDiv("heatmap-weekday-labels");
+    labelsColumn.style.cssText = `
+            display: grid;
+            grid-template-rows: repeat(7, ${cellSize}px);
+            gap: ${gap}px;
+            padding-top: ${monthHeaderHeight + 6}px;
+            color: var(--text-muted);
+            font-size: 11px;
+        `;
+    ["\u4E00", "", "\u4E09", "", "\u4E94", "", "\u65E5"].forEach((label) => {
+      const el = labelsColumn.createDiv("heatmap-weekday-label");
+      el.setText(label);
+      el.style.cssText = `
+                height: ${cellSize}px;
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                line-height: 1;
+            `;
+    });
+    const rightColumn = wrapper.createDiv("heatmap-right");
+    rightColumn.style.cssText = `
+            width: 100%;
+        `;
+    const monthHeader = rightColumn.createDiv("heatmap-month-header");
+    monthHeader.style.cssText = `
+            display: grid;
+            grid-template-columns: repeat(53, ${cellSize}px);
+            gap: ${gap}px;
+            margin-bottom: 6px;
+            color: var(--text-muted);
+            font-size: 11px;
+            min-height: ${monthHeaderHeight}px;
+        `;
+    const monthNames = new Array(53).fill("");
+    for (let month = 0; month < 12; month++) {
+      const monthDate = new Date(year, month, 1);
+      const col = this.getWeekIndexInYear(monthDate, year);
+      monthNames[col] = `${month + 1}\u6708`;
+    }
+    monthNames.forEach((name) => {
+      const cell = monthHeader.createDiv("heatmap-month-cell");
+      cell.setText(name);
+    });
+    const grid = rightColumn.createDiv("heatmap-grid");
+    grid.style.cssText = `
+            display: grid;
+            grid-auto-flow: column;
+            grid-template-columns: repeat(53, ${cellSize}px);
+            grid-template-rows: repeat(7, ${cellSize}px);
+            gap: ${gap}px;
+        `;
+    for (let week = 0; week < 53; week++) {
+      for (let weekday = 0; weekday < 7; weekday++) {
+        const cellDate = this.getDateForWeekCell(year, week, weekday);
+        const cell = grid.createDiv("heatmap-cell");
+        cell.style.cssText = `
+                    width: ${cellSize}px;
+                    height: ${cellSize}px;
+                    border-radius: ${Math.max(3, Math.floor(cellSize / 3.5))}px;
+                    background-color: ${this.getHeatmapColor(this.getDateCount(dailyCounts, cellDate), maxCount)};
+                    border: 1px solid var(--background-modifier-border-hover);
+                    box-sizing: border-box;
+                    cursor: ${cellDate && this.getDateCount(dailyCounts, cellDate) > 0 ? "pointer" : "default"};
+                `;
+        if (!cellDate || cellDate.getFullYear() !== year) {
+          cell.style.opacity = "0.22";
+        } else {
+          const dateStr = this.formatDate(cellDate);
+          const count = this.getDateCount(dailyCounts, cellDate);
+          cell.setAttribute("title", `${dateStr} \xB7 ${count.toLocaleString()} \u5B57`);
+          if (count > 0) {
+            cell.addEventListener("click", () => {
+              this.openDiaryFile(dateStr);
+            });
+          }
+        }
+      }
+    }
+  }
+  async loadTodayHistory() {
+    if (!this.todayHistoryContainer)
+      return;
+    this.todayHistoryContainer.empty();
+    const loadingItem = this.todayHistoryContainer.createDiv("loading-item");
+    loadingItem.setText("\u52A0\u8F7D\u4E2D...");
+    loadingItem.style.cssText = `
+            color: var(--text-muted);
+            text-align: center;
+            padding: 20px;
+        `;
+    const entries = await this.getTodayHistoryEntries();
+    this.todayHistoryContainer.empty();
+    if (entries.length === 0) {
+      const emptyItem = this.todayHistoryContainer.createDiv("empty-item");
+      emptyItem.setText("\u5386\u53F2\u4E0A\u8FD9\u4E00\u5929\u8FD8\u6CA1\u6709\u627E\u5230\u65E5\u8BB0\u8BB0\u5F55");
+      emptyItem.style.cssText = `
+                color: var(--text-muted);
+                text-align: center;
+                padding: 20px;
+            `;
+      return;
+    }
+    entries.forEach((entry, index2) => {
+      const item = this.todayHistoryContainer.createDiv("history-item");
+      item.style.cssText = `
+                position: relative;
+                padding: 14px 16px;
+                background-color: var(--background-primary);
+                border-radius: 8px;
+                border-left: 4px solid ${index2 === 0 ? "var(--interactive-accent)" : "var(--background-modifier-border-hover)"};
+                cursor: pointer;
+                transition: all 0.2s ease;
+            `;
+      const titleRow = item.createDiv("history-item-title");
+      titleRow.style.cssText = `
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 8px;
+                flex-wrap: wrap;
+            `;
+      titleRow.createSpan({ text: `\u{1F4C5} ${entry.date}` });
+      const wordChip = titleRow.createSpan({ text: `${entry.wordCount.toLocaleString()} \u5B57` });
+      wordChip.style.cssText = `
+                padding: 2px 8px;
+                border-radius: 999px;
+                background-color: var(--background-modifier-hover);
+                color: var(--text-muted);
+                font-size: 0.85em;
+            `;
+      const preview = item.createDiv("history-item-preview");
+      preview.innerHTML = this.escapeHtml(entry.preview).replace(/\n/g, "<br>");
+      preview.style.cssText = `
+                line-height: 1.7;
+                color: var(--text-normal);
+                font-size: 0.95em;
+            `;
+      item.addEventListener("mouseenter", () => {
+        item.style.transform = "translateX(4px)";
+        item.style.backgroundColor = "var(--background-secondary)";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.transform = "translateX(0)";
+        item.style.backgroundColor = "var(--background-primary)";
+      });
+      item.addEventListener("click", () => {
+        this.openDiaryFile(entry.date);
+      });
+    });
   }
   async getDailyWordCountData(days) {
     const labels = [];
@@ -15084,8 +15169,7 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
       const dateStr = this.formatDate(date);
       labels.push(dateStr.slice(5));
       fullDates.push(dateStr);
-      const wordCount = await this.getWordCountForDate(dateStr);
-      counts.push(wordCount);
+      counts.push(await this.getWordCountForDate(dateStr));
     }
     return { labels, counts, fullDates };
   }
@@ -15096,102 +15180,125 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     const months = await this.getAllMonths();
     months.sort();
     for (const month of months) {
-      const [year, monthNum] = month.split("-");
+      const [, monthNum] = month.split("-");
       labels.push(`${monthNum}\u6708`);
       fullMonths.push(month);
-      const avg = await this.calculateMonthlyAverage(month);
-      avgs.push(avg);
+      avgs.push(await this.calculateMonthlyAverage(month));
     }
     return { labels, avgs, fullMonths };
   }
   async getAllMonths() {
-    const folderPath = this.plugin.settings.diaryFolder;
-    const months = /* @__PURE__ */ new Set();
-    try {
-      const files = this.app.vault.getFiles();
-      for (const file of files) {
-        if (file.path.startsWith(folderPath + "/") && file.extension === "md") {
-          const fileName = file.basename;
-          if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-            const month = fileName.slice(0, 7);
-            months.add(month);
-          }
-        }
-      }
-    } catch (error) {
-      console.error("\u83B7\u53D6\u6708\u4EFD\u5217\u8868\u65F6\u51FA\u9519:", error);
-    }
-    return Array.from(months);
+    return Array.from(new Set(this.getDiaryFiles().map((file) => file.basename.slice(0, 7))));
   }
   async calculateMonthlyAverage(month) {
-    const folderPath = this.plugin.settings.diaryFolder;
     const [year, monthNum] = month.split("-");
-    const daysInMonth = new Date(parseInt(year), parseInt(monthNum), 0).getDate();
+    const daysInMonth = new Date(parseInt(year, 10), parseInt(monthNum, 10), 0).getDate();
     let totalWords = 0;
     let daysWithContent = 0;
     for (let day = 1; day <= daysInMonth; day++) {
       const dateStr = `${year}-${monthNum}-${String(day).padStart(2, "0")}`;
-      const filePath = `${folderPath}/${dateStr}.md`;
-      try {
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (file && file instanceof import_obsidian.TFile) {
-          const content = await this.app.vault.read(file);
-          const wordCount = this.countWords(content);
-          if (wordCount > 0) {
-            totalWords += wordCount;
-            daysWithContent++;
-          }
-        }
-      } catch (error) {
+      const wordCount = await this.getWordCountForDate(dateStr);
+      if (wordCount > 0) {
+        totalWords += wordCount;
+        daysWithContent++;
       }
     }
     return daysWithContent > 0 ? totalWords / daysWithContent : 0;
   }
+  async getYearlyHeatmapData(year) {
+    const result = /* @__PURE__ */ new Map();
+    const diaryFiles = this.getDiaryFiles().filter((file) => file.basename.startsWith(`${year}-`));
+    for (const file of diaryFiles) {
+      result.set(file.basename, this.countWords(await this.app.vault.read(file)));
+    }
+    return result;
+  }
+  async getTodayHistoryEntries() {
+    const today = /* @__PURE__ */ new Date();
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+    const currentYear = today.getFullYear();
+    const suffix = `-${month}-${day}`;
+    const entries = [];
+    for (const file of this.getDiaryFiles()) {
+      if (!file.basename.endsWith(suffix)) {
+        continue;
+      }
+      const entryYear = parseInt(file.basename.slice(0, 4), 10);
+      if (entryYear >= currentYear) {
+        continue;
+      }
+      const content = await this.app.vault.read(file);
+      const cleaned = this.stripFrontmatter(content).trim();
+      entries.push({
+        date: file.basename,
+        year: entryYear,
+        wordCount: this.countWords(content),
+        preview: this.createPreviewText(cleaned, 220)
+      });
+    }
+    return entries.sort((a, b) => b.year - a.year);
+  }
   async openDiaryFile(dateStr) {
-    const folderPath = this.plugin.settings.diaryFolder;
-    const filePath = `${folderPath}/${dateStr}.md`;
-    const file = this.app.vault.getAbstractFileByPath(filePath);
-    if (file && file instanceof import_obsidian.TFile) {
+    const file = this.app.vault.getAbstractFileByPath(`${this.plugin.settings.diaryFolder}/${dateStr}.md`);
+    if (file instanceof import_obsidian.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     }
   }
   async openMonthlySummary(monthStr) {
-    const folderPath = this.plugin.settings.diaryFolder;
-    const filePath = `${folderPath}/${monthStr}.md`;
+    const filePath = `${this.plugin.settings.diaryFolder}/${monthStr}.md`;
     let file = this.app.vault.getAbstractFileByPath(filePath);
     if (!file) {
       file = await this.app.vault.create(filePath, "");
     }
-    if (file && file instanceof import_obsidian.TFile) {
+    if (file instanceof import_obsidian.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     }
   }
   async getWordCountForDate(dateStr) {
-    const folderPath = this.plugin.settings.diaryFolder;
-    const fileName = `${dateStr}.md`;
-    const filePath = `${folderPath}/${fileName}`;
-    try {
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (file && file instanceof import_obsidian.TFile) {
-        const content = await this.app.vault.read(file);
-        return this.countWords(content);
-      }
-    } catch (error) {
+    const file = this.app.vault.getAbstractFileByPath(`${this.plugin.settings.diaryFolder}/${dateStr}.md`);
+    if (!(file instanceof import_obsidian.TFile)) {
+      return 0;
     }
-    return 0;
+    try {
+      return this.countWords(await this.app.vault.read(file));
+    } catch (e) {
+      return 0;
+    }
   }
   countWords(text) {
-    text = text.replace(/^---[\s\S]*?---\n?/, "");
-    text = text.replace(/```[\s\S]*?```/g, "");
-    text = text.replace(/`[^`]*`/g, "");
-    text = text.replace(/!\[.*?\]\(.*?\)/g, "");
-    text = text.replace(/\[.*?\]\(.*?\)/g, "");
-    text = text.replace(/\[\[.*?\]\]/g, "");
-    text = text.replace(/[#*`~\[\]()_>|-]/g, " ");
-    text = text.replace(/\s+/g, " ").trim();
-    const chineseChars = text.match(/[\u4e00-\u9fa5]/g) || [];
-    const englishWords = text.match(/[a-zA-Z0-9]+(?:[''-][a-zA-Z0-9]+)?/g) || [];
-    return chineseChars.length + englishWords.length;
+    var _a, _b;
+    let normalized = text;
+    normalized = normalized.replace(/^---[\s\S]*?---\n?/u, "");
+    normalized = normalized.replace(/```[\s\S]*?```/gu, " ");
+    normalized = normalized.replace(/`[^`]*`/gu, " ");
+    normalized = normalized.replace(/!\[([^\]]*)\]\((.*?)\)/gu, " $1 ");
+    normalized = normalized.replace(/\[([^\]]+)\]\((.*?)\)/gu, " $1 ");
+    normalized = normalized.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/gu, " $2 ");
+    normalized = normalized.replace(/\[\[([^\]]+)\]\]/gu, " $1 ");
+    normalized = normalized.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/gmu, "");
+    normalized = normalized.replace(/[#*_~>|]/gu, " ");
+    normalized = normalized.replace(/\s+/gu, " ").trim();
+    const hanChars = (_a = normalized.match(/\p{Script=Han}/gu)) != null ? _a : [];
+    const latinBase = normalized.replace(/\p{Script=Han}/gu, " ");
+    const englishWords = (_b = latinBase.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g)) != null ? _b : [];
+    return hanChars.length + englishWords.length;
+  }
+  stripFrontmatter(text) {
+    return text.replace(/^---[\s\S]*?---\n?/u, "");
+  }
+  createPreviewText(text, maxLength) {
+    const flat = text.replace(/\n{2,}/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 3).join("\n");
+    if (flat.length <= maxLength) {
+      return flat || "\u8FD9\u4E00\u5929\u5199\u4E0B\u4E86\u4E00\u4E9B\u5185\u5BB9\u3002";
+    }
+    return `${flat.slice(0, maxLength)}...`;
+  }
+  extractMemoryCandidateLines(text) {
+    const cleaned = this.stripFrontmatter(text).replace(/```[\s\S]*?```/gu, "\n").replace(/!\[\[.*?\]\]/gu, "\n").replace(/!\[.*?\]\(.*?\)/gu, "\n").replace(/<img[\s\S]*?>/giu, "\n").replace(/<iframe[\s\S]*?<\/iframe>/giu, "\n");
+    return cleaned.split("\n").map((line) => line.trim()).filter((line) => {
+      return line.length > 10 && !line.startsWith("#") && !line.startsWith("- [ ]") && !line.startsWith("- [x]") && !/^[0-9]+\./.test(line) && !line.startsWith(">") && !line.startsWith("|") && !line.includes("```") && !line.includes("```chart") && !/^!\[\[.*\]\]$/.test(line) && !/^!\[.*\]\(.*\)$/.test(line);
+    });
   }
   formatDate(date) {
     const year = date.getFullYear();
@@ -15199,20 +15306,87 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   }
+  getLastYearToday() {
+    const today = /* @__PURE__ */ new Date();
+    const lastYearDate = new Date(today);
+    lastYearDate.setFullYear(today.getFullYear() - 1);
+    return lastYearDate;
+  }
+  getWeekIndexInYear(date, year) {
+    const yearStart = new Date(year, 0, 1);
+    const offset = (yearStart.getDay() + 6) % 7;
+    const diffDays = Math.floor((date.getTime() - yearStart.getTime()) / 864e5);
+    return Math.floor((diffDays + offset) / 7);
+  }
+  getDateForWeekCell(year, weekIndex, weekdayIndex) {
+    const yearStart = new Date(year, 0, 1);
+    const offset = (yearStart.getDay() + 6) % 7;
+    const cellDayOffset = weekIndex * 7 + weekdayIndex - offset;
+    const cellDate = new Date(year, 0, 1);
+    cellDate.setDate(cellDate.getDate() + cellDayOffset);
+    return cellDate;
+  }
+  getHeatmapLayoutMetrics(containerWidth) {
+    const labelWidth = 36;
+    const minCellSize = 10;
+    const minGap = 2;
+    const usableWidth = Math.max(620, containerWidth - labelWidth - 16);
+    let cellSize = Math.floor((usableWidth - minGap * 52) / 53);
+    cellSize = Math.max(minCellSize, cellSize);
+    let gap = (usableWidth - cellSize * 53) / 52;
+    gap = Math.max(minGap, gap);
+    return {
+      cellSize,
+      gap,
+      labelWidth,
+      monthHeaderHeight: 22
+    };
+  }
+  getDateCount(dailyCounts, date) {
+    var _a;
+    if (!date) {
+      return 0;
+    }
+    return (_a = dailyCounts.get(this.formatDate(date))) != null ? _a : 0;
+  }
+  getHeatmapColor(count, maxCount) {
+    if (count <= 0 || maxCount <= 0) {
+      return "var(--background-modifier-border)";
+    }
+    const ratio = count / maxCount;
+    if (ratio >= 0.85)
+      return "rgba(15, 118, 110, 0.95)";
+    if (ratio >= 0.6)
+      return "rgba(20, 184, 166, 0.85)";
+    if (ratio >= 0.35)
+      return "rgba(45, 212, 191, 0.7)";
+    if (ratio >= 0.15)
+      return "rgba(153, 246, 228, 0.7)";
+    return "rgba(204, 251, 241, 0.7)";
+  }
   async getCurrentMonthWordCount() {
     const now = /* @__PURE__ */ new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth() + 1;
-    let total = 0;
     const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+    let total = 0;
     for (let day = 1; day <= daysInMonth; day++) {
       const dateStr = `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      const wordCount = await this.getWordCountForDate(dateStr);
-      total += wordCount;
+      total += await this.getWordCountForDate(dateStr);
     }
     return total;
   }
-  updateStats(counts, labels, fullDates) {
+  async getTodayWordCount() {
+    return this.getWordCountForDate(this.formatDate(/* @__PURE__ */ new Date()));
+  }
+  async getTotalWordCount() {
+    let total = 0;
+    for (const file of this.getDiaryFiles()) {
+      total += this.countWords(await this.app.vault.read(file));
+    }
+    return total;
+  }
+  updateStats(counts, fullDates) {
     const container = this.containerEl.children[1];
     let statsDiv = container.querySelector(".word-count-stats");
     if (!statsDiv) {
@@ -15226,26 +15400,38 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
             border: 1px solid var(--background-modifier-border);
             margin-bottom: 10px;
         `;
-    const total = counts.reduce((sum, count) => sum + count, 0);
     const max = counts.length > 0 ? Math.max(...counts) : 0;
     const maxIndex = counts.indexOf(max);
     const maxDate = maxIndex >= 0 ? fullDates[maxIndex] : "";
     Promise.all([
       this.getTotalDiaryCount(),
-      this.getCurrentMonthWordCount()
-    ]).then(([totalDiaryCount, monthTotal]) => {
-      statsDiv.createEl("h3", { text: "\u{1F4C8} \u7EDF\u8BA1\u4FE1\u606F" });
+      this.getTotalWordCount(),
+      this.getCurrentMonthWordCount(),
+      this.getTodayWordCount()
+    ]).then(([totalDiaryCount, totalWordCount, monthTotal, todayWordCount]) => {
+      this.createPanelHeader(statsDiv, "\u{1F4C8} \u7EDF\u8BA1\u4FE1\u606F", (actionsEl) => {
+        const refreshBtn = actionsEl.createEl("button", {
+          text: "\u{1F504} \u5237\u65B0\u5168\u90E8",
+          cls: "mod-cta"
+        });
+        refreshBtn.style.cssText = this.getButtonStyle();
+        refreshBtn.setAttribute("title", "\u5237\u65B0\u5168\u90E8\u4FE1\u606F");
+        refreshBtn.addEventListener("click", () => {
+          this.refreshAllCharts();
+        });
+      });
       const statsGrid = statsDiv.createDiv("stats-grid");
       statsGrid.style.cssText = `
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
                 gap: 12px;
                 margin-top: 10px;
             `;
       const stats = [
-        { label: "\u{1F4DA} \u603B\u65E5\u8BB0\u6570", value: totalDiaryCount.toString() },
-        { label: "\u270D\uFE0F \u603B\u8BA1\u5B57\u6570", value: total.toLocaleString() },
-        { label: "\u{1F4C5} \u672C\u6708\u7D2F\u8BA1", value: monthTotal.toLocaleString() }
+        { label: "\u{1F4D8} \u603B\u65E5\u8BB0\u6570", value: totalDiaryCount.toString() },
+        { label: "\u270D\uFE0F \u603B\u8BA1\u5B57\u6570", value: totalWordCount.toLocaleString() },
+        { label: "\u{1F5D3}\uFE0F \u4ECA\u65E5\u5B57\u6570", value: todayWordCount.toLocaleString() },
+        { label: "\u{1F4C6} \u672C\u6708\u7D2F\u8BA1", value: monthTotal.toLocaleString() }
       ];
       stats.forEach((stat) => {
         const statItem = statsGrid.createDiv("stat-item");
@@ -15296,7 +15482,7 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
         maxDayDiv.style.borderColor = "var(--background-modifier-border)";
       });
       const maxLabelDiv = maxDayDiv.createDiv("max-label");
-      maxLabelDiv.setText("\u{1F3C6} \u6700\u9AD8\u5355\u65E5");
+      maxLabelDiv.setText("\u{1F3C5} \u8FD1\u671F\u6700\u9AD8\u5355\u65E5");
       maxLabelDiv.style.cssText = `
                 font-size: 0.9em;
                 color: var(--text-muted);
@@ -15344,34 +15530,115 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
           await this.openDiaryFile(maxDate);
         });
       }
+    }).catch((error) => {
+      console.error("\u66F4\u65B0\u7EDF\u8BA1\u4FE1\u606F\u65F6\u51FA\u9519:", error);
+    });
+  }
+  async loadRandomMemories() {
+    if (!this.memoryContainer)
+      return;
+    this.memoryContainer.empty();
+    for (let i = 0; i < 3; i++) {
+      const loadingItem = this.memoryContainer.createDiv("memory-item");
+      loadingItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                color: var(--text-muted);
+                border-left: 4px solid var(--interactive-accent);
+            `;
+      loadingItem.setText("\u52A0\u8F7D\u4E2D...");
+    }
+    const memories = await this.getRandomMemories(3);
+    this.memoryContainer.empty();
+    if (memories.length === 0) {
+      const emptyItem = this.memoryContainer.createDiv("memory-item");
+      emptyItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                color: var(--text-muted);
+                border-left: 4px solid var(--interactive-accent);
+            `;
+      emptyItem.setText("\u6682\u65E0\u65E5\u8BB0\u8BB0\u5F55\uFF0C\u5F00\u59CB\u5199\u65E5\u8BB0\u5427\uFF01");
+      return;
+    }
+    memories.forEach((memory) => {
+      const memoryItem = this.memoryContainer.createDiv("memory-item");
+      memoryItem.style.cssText = `
+                padding: 12px 16px;
+                background-color: var(--background-primary);
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                border-left: 4px solid var(--interactive-accent);
+            `;
+      const memoryText = memoryItem.createDiv("memory-text");
+      memoryText.setText(memory.text);
+      memoryText.style.cssText = `
+                font-size: 1em;
+                line-height: 1.6;
+                color: var(--text-normal);
+                margin-bottom: 6px;
+            `;
+      const memoryDate = memoryItem.createDiv("memory-date");
+      memoryDate.setText(`\u{1F4C5} ${memory.date}`);
+      memoryDate.style.cssText = `
+                font-size: 0.85em;
+                color: var(--text-muted);
+            `;
+      memoryItem.addEventListener("mouseenter", () => {
+        memoryItem.style.backgroundColor = "var(--background-secondary)";
+        memoryItem.style.transform = "translateX(4px)";
+      });
+      memoryItem.addEventListener("mouseleave", () => {
+        memoryItem.style.backgroundColor = "var(--background-primary)";
+        memoryItem.style.transform = "translateX(0)";
+      });
+      memoryItem.addEventListener("click", () => {
+        this.openDiaryFile(memory.date);
+      });
+    });
+  }
+  escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  async getRandomMemories(count) {
+    const diaryFiles = this.getDiaryFiles();
+    if (diaryFiles.length === 0) {
+      return [];
+    }
+    const allLines = [];
+    for (const file of diaryFiles) {
+      const content = await this.app.vault.read(file);
+      const lines = this.extractMemoryCandidateLines(content);
+      lines.forEach((line) => {
+        allLines.push({
+          text: line,
+          date: file.basename
+        });
+      });
+    }
+    if (allLines.length === 0) {
+      return [];
+    }
+    const selected = /* @__PURE__ */ new Set();
+    const maxCount = Math.min(count, allLines.length);
+    while (selected.size < maxCount) {
+      selected.add(Math.floor(Math.random() * allLines.length));
+    }
+    return Array.from(selected).map((index2) => allLines[index2]);
+  }
+  getDiaryFiles() {
+    const folderPath = `${this.plugin.settings.diaryFolder}/`;
+    return this.app.vault.getFiles().filter((file) => {
+      return file.path.startsWith(folderPath) && file.extension === "md" && /^\d{4}-\d{2}-\d{2}$/.test(file.basename);
     });
   }
   async getTotalDiaryCount() {
-    const folderPath = this.plugin.settings.diaryFolder;
-    try {
-      const files = this.app.vault.getFiles();
-      let count = 0;
-      for (const file of files) {
-        if (file.path.startsWith(folderPath + "/") && file.extension === "md") {
-          const fileName = file.basename;
-          if (/^\d{4}-\d{2}-\d{2}$/.test(fileName)) {
-            count++;
-          }
-        }
-      }
-      return count;
-    } catch (error) {
-      console.error("\u83B7\u53D6\u603B\u65E5\u8BB0\u6570\u65F6\u51FA\u9519:", error);
-      return 0;
-    }
-  }
-  async onClose() {
-    if (this.dailyChart) {
-      this.dailyChart.destroy();
-    }
-    if (this.monthlyChart) {
-      this.monthlyChart.destroy();
-    }
+    return this.getDiaryFiles().length;
   }
 };
 var DiaryNavigatorPlugin = class extends import_obsidian.Plugin {
@@ -15431,12 +15698,12 @@ var DiaryNavigatorSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "\u{1F4CA} \u65E5\u8BB0\u5B57\u6570\u7EDF\u8BA1\u8BBE\u7F6E" });
     new import_obsidian.Setting(containerEl).setName("\u65E5\u8BB0\u6587\u4EF6\u5939").setDesc("\u5B58\u653E\u65E5\u8BB0\u6587\u4EF6\u7684\u6587\u4EF6\u5939\u540D\u79F0").addText((text) => text.setPlaceholder("\u65E5\u8BB0").setValue(this.plugin.settings.diaryFolder).onChange(async (value) => {
-      this.plugin.settings.diaryFolder = value;
+      this.plugin.settings.diaryFolder = value.trim() || "\u65E5\u8BB0";
       await this.plugin.saveSettings();
     }));
     new import_obsidian.Setting(containerEl).setName("\u65E5\u671F\u683C\u5F0F").setDesc("\u65E5\u8BB0\u6587\u4EF6\u7684\u547D\u540D\u683C\u5F0F\uFF08\u6682\u4E0D\u652F\u6301\u4FEE\u6539\uFF09").addText((text) => text.setPlaceholder("YYYY-MM-DD").setValue(this.plugin.settings.dateFormat).setDisabled(true));
     containerEl.createEl("div", {
-      text: "\u{1F4A1} \u63D0\u793A\uFF1A\u70B9\u51FB\u6298\u7EBF\u56FE\u4E0A\u7684\u70B9\u53EF\u8DF3\u8F6C\u5230\u5BF9\u5E94\u65E5\u8BB0\uFF1B\u70B9\u51FB\u67F1\u72B6\u56FE\u53EF\u8DF3\u8F6C\u5230\u5BF9\u5E94\u6708\u4EFD\u7684\u603B\u7ED3\u6587\u4EF6\uFF08YYYY-MM.md\uFF09\u3002",
+      text: "\u63D0\u793A\uFF1A\u6298\u7EBF\u56FE\u53EF\u76F4\u63A5\u6253\u5F00\u5BF9\u5E94\u65E5\u671F\u65E5\u8BB0\uFF0C\u67F1\u72B6\u56FE\u53EF\u76F4\u63A5\u6253\u5F00\u5BF9\u5E94\u6708\u4EFD\u603B\u7ED3\u6587\u4EF6\uFF0C\u70ED\u529B\u56FE\u4E0E\u5386\u53F2\u4E0A\u7684\u4ECA\u5929\u4E5F\u90FD\u652F\u6301\u70B9\u51FB\u8DF3\u8F6C\u3002",
       cls: "setting-item-description"
     }).style.cssText = "margin-top: 20px; padding: 10px; background: var(--background-secondary); border-radius: 5px;";
   }
