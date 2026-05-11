@@ -14505,7 +14505,8 @@ var registerables = [
 Chart.register(...registerables);
 var DEFAULT_SETTINGS = {
   diaryFolder: "\u65E5\u8BB0",
-  dateFormat: "YYYY-MM-DD"
+  dateFormat: "YYYY-MM-DD",
+  trackedTag: ""
 };
 var VIEW_TYPE_DIARY_NAVIGATOR = "word-count-chart-view";
 var DiaryNavigatorView = class extends import_obsidian.ItemView {
@@ -14798,6 +14799,35 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
             border-radius: 4px;
             background-color: var(--background-modifier-form-field);
             border: 1px solid var(--background-modifier-border);
+        `;
+  }
+  createStatsCard(container) {
+    const statItem = container.createDiv("stat-item");
+    statItem.style.cssText = `
+            padding: 14px;
+            background-color: var(--background-primary);
+            border-radius: 8px;
+            border: 1px solid var(--background-modifier-border);
+            transition: all 0.2s ease;
+        `;
+    statItem.addEventListener("mouseenter", () => {
+      statItem.style.transform = "translateY(-2px)";
+      statItem.style.boxShadow = "0 4px 8px rgba(0,0,0,0.1)";
+      statItem.style.borderColor = "var(--interactive-accent)";
+    });
+    statItem.addEventListener("mouseleave", () => {
+      statItem.style.transform = "translateY(0)";
+      statItem.style.boxShadow = "none";
+      statItem.style.borderColor = "var(--background-modifier-border)";
+    });
+    return statItem;
+  }
+  getStatValueStyle() {
+    return `
+            font-size: 1.4em;
+            font-weight: bold;
+            color: var(--text-accent);
+            margin-top: 5px;
         `;
   }
   async refreshAllCharts() {
@@ -15386,6 +15416,85 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     }
     return total;
   }
+  normalizeTag(tag) {
+    const trimmed = tag.trim();
+    if (!trimmed)
+      return "";
+    return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+  }
+  getTagLabel(tag) {
+    return this.normalizeTag(tag).replace(/^#/, "");
+  }
+  extractTags(text) {
+    var _a;
+    const matches = (_a = text.match(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)) != null ? _a : [];
+    const tags = matches.map((match) => match.trim()).map((match) => this.normalizeTag(match)).filter(Boolean);
+    return Array.from(new Set(tags));
+  }
+  getTagsForFile(file) {
+    var _a, _b;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const tagSet = /* @__PURE__ */ new Set();
+    (_a = cache == null ? void 0 : cache.tags) == null ? void 0 : _a.forEach((tagInfo) => {
+      const normalized = this.normalizeTag(tagInfo.tag);
+      if (normalized) {
+        tagSet.add(normalized);
+      }
+    });
+    const frontmatterTags = (_b = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _b.tags;
+    if (Array.isArray(frontmatterTags)) {
+      frontmatterTags.forEach((tag) => {
+        if (typeof tag === "string") {
+          const normalized = this.normalizeTag(tag);
+          if (normalized) {
+            tagSet.add(normalized);
+          }
+        }
+      });
+    } else if (typeof frontmatterTags === "string") {
+      frontmatterTags.split(/[,\s]+/).map((tag) => this.normalizeTag(tag)).filter(Boolean).forEach((tag) => tagSet.add(tag));
+    }
+    return Array.from(tagSet);
+  }
+  async getAvailableTags() {
+    const tagCounts = /* @__PURE__ */ new Map();
+    for (const file of this.getDiaryFiles()) {
+      this.getTagsForFile(file).forEach((tag) => {
+        var _a;
+        tagCounts.set(tag, ((_a = tagCounts.get(tag)) != null ? _a : 0) + 1);
+      });
+    }
+    return Array.from(tagCounts.entries()).sort((a, b) => {
+      if (b[1] !== a[1]) {
+        return b[1] - a[1];
+      }
+      return a[0].localeCompare(b[0], "zh-Hans-CN");
+    }).map(([tag]) => tag);
+  }
+  async getLastTagOccurrence(tag) {
+    const normalizedTag = this.normalizeTag(tag);
+    if (!normalizedTag) {
+      return { lastDate: null, daysSince: null };
+    }
+    const diaryFiles = this.getDiaryFiles().slice().sort((a, b) => b.basename.localeCompare(a.basename));
+    for (const file of diaryFiles) {
+      const tags = this.getTagsForFile(file);
+      if (!tags.includes(normalizedTag)) {
+        continue;
+      }
+      const [year, month, day] = file.basename.split("-").map(Number);
+      const lastDate = new Date(year, month - 1, day);
+      const today = /* @__PURE__ */ new Date();
+      const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const diffMs = startOfToday.getTime() - lastDate.getTime();
+      const daysSince = Math.floor(diffMs / 864e5);
+      return {
+        lastDate: file.basename,
+        daysSince
+      };
+    }
+    return { lastDate: null, daysSince: null };
+  }
   updateStats(counts, fullDates) {
     const container = this.containerEl.children[1];
     let statsDiv = container.querySelector(".word-count-stats");
@@ -15407,8 +15516,21 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
       this.getTotalDiaryCount(),
       this.getTotalWordCount(),
       this.getCurrentMonthWordCount(),
-      this.getTodayWordCount()
-    ]).then(([totalDiaryCount, totalWordCount, monthTotal, todayWordCount]) => {
+      this.getTodayWordCount(),
+      this.getAvailableTags()
+    ]).then(async ([totalDiaryCount, totalWordCount, monthTotal, todayWordCount, availableTags]) => {
+      let trackedTag = this.normalizeTag(this.plugin.settings.trackedTag);
+      if (trackedTag && !availableTags.includes(trackedTag)) {
+        trackedTag = "";
+      }
+      if (!trackedTag && availableTags.length > 0) {
+        trackedTag = availableTags[0];
+      }
+      if (trackedTag !== this.plugin.settings.trackedTag) {
+        this.plugin.settings.trackedTag = trackedTag;
+        await this.plugin.saveSettings();
+      }
+      const tagSummary = trackedTag ? await this.getLastTagOccurrence(trackedTag) : { lastDate: null, daysSince: null };
       this.createPanelHeader(statsDiv, "\u{1F4C8} \u7EDF\u8BA1\u4FE1\u606F", (actionsEl) => {
         const refreshBtn = actionsEl.createEl("button", {
           text: "\u{1F504} \u5237\u65B0\u5168\u90E8",
@@ -15427,41 +15549,61 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
                 gap: 12px;
                 margin-top: 10px;
             `;
-      const stats = [
+      const statItems = [
         { label: "\u{1F4D8} \u603B\u65E5\u8BB0\u6570", value: totalDiaryCount.toString() },
         { label: "\u270D\uFE0F \u603B\u8BA1\u5B57\u6570", value: totalWordCount.toLocaleString() },
         { label: "\u{1F5D3}\uFE0F \u4ECA\u65E5\u5B57\u6570", value: todayWordCount.toLocaleString() },
         { label: "\u{1F4C6} \u672C\u6708\u7D2F\u8BA1", value: monthTotal.toLocaleString() }
       ];
-      stats.forEach((stat) => {
-        const statItem = statsGrid.createDiv("stat-item");
-        statItem.style.cssText = `
-                    padding: 14px;
-                    background-color: var(--background-primary);
-                    border-radius: 8px;
-                    border: 1px solid var(--background-modifier-border);
-                    transition: all 0.2s ease;
-                `;
-        statItem.addEventListener("mouseenter", () => {
-          statItem.style.transform = "translateY(-2px)";
-          statItem.style.boxShadow = "0 4px 8px rgba(0,0,0,0.1)";
-          statItem.style.borderColor = "var(--interactive-accent)";
-        });
-        statItem.addEventListener("mouseleave", () => {
-          statItem.style.transform = "translateY(0)";
-          statItem.style.boxShadow = "none";
-          statItem.style.borderColor = "var(--background-modifier-border)";
-        });
+      statItems.forEach((stat) => {
+        const statItem = this.createStatsCard(statsGrid);
         statItem.createDiv("stat-label").setText(stat.label);
         const valueEl = statItem.createDiv("stat-value");
         valueEl.setText(stat.value);
-        valueEl.style.cssText = `
-                    font-size: 1.4em;
-                    font-weight: bold;
-                    color: var(--text-accent);
-                    margin-top: 5px;
-                `;
+        valueEl.style.cssText = this.getStatValueStyle();
       });
+      if (availableTags.length > 0) {
+        const statItem = this.createStatsCard(statsGrid);
+        const labelRow = statItem.createDiv("stat-label-row");
+        labelRow.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    flex-wrap: wrap;
+                `;
+        labelRow.createSpan({ text: "\u{1F3F7}\uFE0F \u8DDD\u79BB\u4E0A\u6B21" });
+        const tagSelect = labelRow.createEl("select");
+        tagSelect.style.cssText = `
+                    ${this.getControlStyle()}
+                    max-width: 140px;
+                    padding: 2px 8px;
+                    font-size: 12px;
+                `;
+        availableTags.forEach((tag) => {
+          const option = tagSelect.createEl("option", {
+            text: this.getTagLabel(tag),
+            value: tag
+          });
+          option.selected = tag === trackedTag;
+        });
+        tagSelect.addEventListener("change", async (event) => {
+          this.plugin.settings.trackedTag = this.normalizeTag(event.target.value);
+          await this.plugin.saveSettings();
+          this.updateStats(counts, fullDates);
+        });
+        const valueEl = statItem.createDiv("stat-value");
+        valueEl.setText(tagSummary.daysSince === null ? "\u6682\u65E0\u8BB0\u5F55" : `\u5DF2\u7ECF ${tagSummary.daysSince} \u5929`);
+        valueEl.style.cssText = this.getStatValueStyle();
+        if (tagSummary.lastDate) {
+          const desc = statItem.createDiv("stat-desc");
+          desc.setText(`\u4E0A\u6B21\u51FA\u73B0\uFF1A${tagSummary.lastDate}`);
+          desc.style.cssText = `
+                        margin-top: 4px;
+                        color: var(--text-muted);
+                        font-size: 0.85em;
+                    `;
+        }
+      }
       const maxDayDiv = statsDiv.createDiv("max-day-item");
       maxDayDiv.style.cssText = `
                 margin-top: 16px;
@@ -15702,6 +15844,10 @@ var DiaryNavigatorSettingTab = class extends import_obsidian.PluginSettingTab {
       await this.plugin.saveSettings();
     }));
     new import_obsidian.Setting(containerEl).setName("\u65E5\u671F\u683C\u5F0F").setDesc("\u65E5\u8BB0\u6587\u4EF6\u7684\u547D\u540D\u683C\u5F0F\uFF08\u6682\u4E0D\u652F\u6301\u4FEE\u6539\uFF09").addText((text) => text.setPlaceholder("YYYY-MM-DD").setValue(this.plugin.settings.dateFormat).setDisabled(true));
+    new import_obsidian.Setting(containerEl).setName("\u8FFD\u8E2A\u6807\u7B7E").setDesc("\u7528\u4E8E\u7EDF\u8BA1\u201C\u8DDD\u79BB\u4E0A\u6B21\u67D0\u6807\u7B7E\u5DF2\u7ECF\u591A\u5C11\u5929\u201D\uFF0C\u652F\u6301\u586B\u5199 #\u6807\u7B7E").addText((text) => text.setPlaceholder("#\u590D\u76D8").setValue(this.plugin.settings.trackedTag).onChange(async (value) => {
+      this.plugin.settings.trackedTag = value.trim();
+      await this.plugin.saveSettings();
+    }));
     containerEl.createEl("div", {
       text: "\u63D0\u793A\uFF1A\u6298\u7EBF\u56FE\u53EF\u76F4\u63A5\u6253\u5F00\u5BF9\u5E94\u65E5\u671F\u65E5\u8BB0\uFF0C\u67F1\u72B6\u56FE\u53EF\u76F4\u63A5\u6253\u5F00\u5BF9\u5E94\u6708\u4EFD\u603B\u7ED3\u6587\u4EF6\uFF0C\u70ED\u529B\u56FE\u4E0E\u5386\u53F2\u4E0A\u7684\u4ECA\u5929\u4E5F\u90FD\u652F\u6301\u70B9\u51FB\u8DF3\u8F6C\u3002",
       cls: "setting-item-description"

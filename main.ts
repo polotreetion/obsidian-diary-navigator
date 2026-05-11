@@ -6,6 +6,7 @@ Chart.register(...registerables);
 interface DailyWordCountSettings {
     diaryFolder: string;
     dateFormat: string;
+    trackedTag: string;
 }
 
 interface TodayHistoryEntry {
@@ -17,7 +18,8 @@ interface TodayHistoryEntry {
 
 const DEFAULT_SETTINGS: DailyWordCountSettings = {
     diaryFolder: '日记',
-    dateFormat: 'YYYY-MM-DD'
+    dateFormat: 'YYYY-MM-DD',
+    trackedTag: ''
 };
 
 const VIEW_TYPE_DIARY_NAVIGATOR = 'word-count-chart-view';
@@ -345,6 +347,37 @@ class DiaryNavigatorView extends ItemView {
             border-radius: 4px;
             background-color: var(--background-modifier-form-field);
             border: 1px solid var(--background-modifier-border);
+        `;
+    }
+
+    createStatsCard(container: HTMLElement) {
+        const statItem = container.createDiv('stat-item');
+        statItem.style.cssText = `
+            padding: 14px;
+            background-color: var(--background-primary);
+            border-radius: 8px;
+            border: 1px solid var(--background-modifier-border);
+            transition: all 0.2s ease;
+        `;
+        statItem.addEventListener('mouseenter', () => {
+            statItem.style.transform = 'translateY(-2px)';
+            statItem.style.boxShadow = '0 4px 8px rgba(0,0,0,0.1)';
+            statItem.style.borderColor = 'var(--interactive-accent)';
+        });
+        statItem.addEventListener('mouseleave', () => {
+            statItem.style.transform = 'translateY(0)';
+            statItem.style.boxShadow = 'none';
+            statItem.style.borderColor = 'var(--background-modifier-border)';
+        });
+        return statItem;
+    }
+
+    getStatValueStyle() {
+        return `
+            font-size: 1.4em;
+            font-weight: bold;
+            color: var(--text-accent);
+            margin-top: 5px;
         `;
     }
 
@@ -1023,6 +1056,107 @@ class DiaryNavigatorView extends ItemView {
         return total;
     }
 
+    normalizeTag(tag: string) {
+        const trimmed = tag.trim();
+        if (!trimmed) return '';
+        return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+    }
+
+    getTagLabel(tag: string) {
+        return this.normalizeTag(tag).replace(/^#/, '');
+    }
+
+    extractTags(text: string): string[] {
+        const matches = text.match(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu) ?? [];
+        const tags = matches
+            .map((match) => match.trim())
+            .map((match) => this.normalizeTag(match))
+            .filter(Boolean);
+
+        return Array.from(new Set(tags));
+    }
+
+    getTagsForFile(file: TFile): string[] {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const tagSet = new Set<string>();
+
+        cache?.tags?.forEach((tagInfo) => {
+            const normalized = this.normalizeTag(tagInfo.tag);
+            if (normalized) {
+                tagSet.add(normalized);
+            }
+        });
+
+        const frontmatterTags = cache?.frontmatter?.tags;
+        if (Array.isArray(frontmatterTags)) {
+            frontmatterTags.forEach((tag) => {
+                if (typeof tag === 'string') {
+                    const normalized = this.normalizeTag(tag);
+                    if (normalized) {
+                        tagSet.add(normalized);
+                    }
+                }
+            });
+        } else if (typeof frontmatterTags === 'string') {
+            frontmatterTags
+                .split(/[,\s]+/)
+                .map((tag) => this.normalizeTag(tag))
+                .filter(Boolean)
+                .forEach((tag) => tagSet.add(tag));
+        }
+
+        return Array.from(tagSet);
+    }
+
+    async getAvailableTags(): Promise<string[]> {
+        const tagCounts = new Map<string, number>();
+
+        for (const file of this.getDiaryFiles()) {
+            this.getTagsForFile(file).forEach((tag) => {
+                tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+            });
+        }
+
+        return Array.from(tagCounts.entries())
+            .sort((a, b) => {
+                if (b[1] !== a[1]) {
+                    return b[1] - a[1];
+                }
+                return a[0].localeCompare(b[0], 'zh-Hans-CN');
+            })
+            .map(([tag]) => tag);
+    }
+
+    async getLastTagOccurrence(tag: string): Promise<{ lastDate: string | null; daysSince: number | null }> {
+        const normalizedTag = this.normalizeTag(tag);
+        if (!normalizedTag) {
+            return { lastDate: null, daysSince: null };
+        }
+
+        const diaryFiles = this.getDiaryFiles().slice().sort((a, b) => b.basename.localeCompare(a.basename));
+
+        for (const file of diaryFiles) {
+            const tags = this.getTagsForFile(file);
+            if (!tags.includes(normalizedTag)) {
+                continue;
+            }
+
+            const [year, month, day] = file.basename.split('-').map(Number);
+            const lastDate = new Date(year, month - 1, day);
+            const today = new Date();
+            const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const diffMs = startOfToday.getTime() - lastDate.getTime();
+            const daysSince = Math.floor(diffMs / 86400000);
+
+            return {
+                lastDate: file.basename,
+                daysSince
+            };
+        }
+
+        return { lastDate: null, daysSince: null };
+    }
+
     updateStats(counts: number[], fullDates: string[]) {
         const container = this.containerEl.children[1] as HTMLElement;
         let statsDiv = container.querySelector('.word-count-stats') as HTMLElement | null;
@@ -1048,8 +1182,25 @@ class DiaryNavigatorView extends ItemView {
             this.getTotalDiaryCount(),
             this.getTotalWordCount(),
             this.getCurrentMonthWordCount(),
-            this.getTodayWordCount()
-        ]).then(([totalDiaryCount, totalWordCount, monthTotal, todayWordCount]) => {
+            this.getTodayWordCount(),
+            this.getAvailableTags()
+        ]).then(async ([totalDiaryCount, totalWordCount, monthTotal, todayWordCount, availableTags]) => {
+            let trackedTag = this.normalizeTag(this.plugin.settings.trackedTag);
+            if (trackedTag && !availableTags.includes(trackedTag)) {
+                trackedTag = '';
+            }
+            if (!trackedTag && availableTags.length > 0) {
+                trackedTag = availableTags[0];
+            }
+            if (trackedTag !== this.plugin.settings.trackedTag) {
+                this.plugin.settings.trackedTag = trackedTag;
+                await this.plugin.saveSettings();
+            }
+
+            const tagSummary = trackedTag
+                ? await this.getLastTagOccurrence(trackedTag)
+                : { lastDate: null, daysSince: null };
+
             this.createPanelHeader(statsDiv!, '📈 统计信息', (actionsEl) => {
                 const refreshBtn = actionsEl.createEl('button', {
                     text: '🔄 刷新全部',
@@ -1070,43 +1221,66 @@ class DiaryNavigatorView extends ItemView {
                 margin-top: 10px;
             `;
 
-            const stats = [
+            const statItems = [
                 { label: '📘 总日记数', value: totalDiaryCount.toString() },
                 { label: '✍️ 总计字数', value: totalWordCount.toLocaleString() },
                 { label: '🗓️ 今日字数', value: todayWordCount.toLocaleString() },
                 { label: '📆 本月累计', value: monthTotal.toLocaleString() }
             ];
 
-            stats.forEach((stat) => {
-                const statItem = statsGrid.createDiv('stat-item');
-                statItem.style.cssText = `
-                    padding: 14px;
-                    background-color: var(--background-primary);
-                    border-radius: 8px;
-                    border: 1px solid var(--background-modifier-border);
-                    transition: all 0.2s ease;
-                `;
-                statItem.addEventListener('mouseenter', () => {
-                    statItem.style.transform = 'translateY(-2px)';
-                    statItem.style.boxShadow = '0 4px 8px rgba(0,0,0,0.1)';
-                    statItem.style.borderColor = 'var(--interactive-accent)';
-                });
-                statItem.addEventListener('mouseleave', () => {
-                    statItem.style.transform = 'translateY(0)';
-                    statItem.style.boxShadow = 'none';
-                    statItem.style.borderColor = 'var(--background-modifier-border)';
-                });
-
+            statItems.forEach((stat) => {
+                const statItem = this.createStatsCard(statsGrid);
                 statItem.createDiv('stat-label').setText(stat.label);
                 const valueEl = statItem.createDiv('stat-value');
                 valueEl.setText(stat.value);
-                valueEl.style.cssText = `
-                    font-size: 1.4em;
-                    font-weight: bold;
-                    color: var(--text-accent);
-                    margin-top: 5px;
-                `;
+                valueEl.style.cssText = this.getStatValueStyle();
             });
+
+            if (availableTags.length > 0) {
+                const statItem = this.createStatsCard(statsGrid);
+                const labelRow = statItem.createDiv('stat-label-row');
+                labelRow.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    flex-wrap: wrap;
+                `;
+                labelRow.createSpan({ text: '🏷️ 距离上次' });
+
+                const tagSelect = labelRow.createEl('select');
+                tagSelect.style.cssText = `
+                    ${this.getControlStyle()}
+                    max-width: 140px;
+                    padding: 2px 8px;
+                    font-size: 12px;
+                `;
+                availableTags.forEach((tag) => {
+                    const option = tagSelect.createEl('option', {
+                        text: this.getTagLabel(tag),
+                        value: tag
+                    });
+                    option.selected = tag === trackedTag;
+                });
+                tagSelect.addEventListener('change', async (event) => {
+                    this.plugin.settings.trackedTag = this.normalizeTag((event.target as HTMLSelectElement).value);
+                    await this.plugin.saveSettings();
+                    this.updateStats(counts, fullDates);
+                });
+
+                const valueEl = statItem.createDiv('stat-value');
+                valueEl.setText(tagSummary.daysSince === null ? '暂无记录' : `已经 ${tagSummary.daysSince} 天`);
+                valueEl.style.cssText = this.getStatValueStyle();
+
+                if (tagSummary.lastDate) {
+                    const desc = statItem.createDiv('stat-desc');
+                    desc.setText(`上次出现：${tagSummary.lastDate}`);
+                    desc.style.cssText = `
+                        margin-top: 4px;
+                        color: var(--text-muted);
+                        font-size: 0.85em;
+                    `;
+                }
+            }
 
             const maxDayDiv = statsDiv!.createDiv('max-day-item');
             maxDayDiv.style.cssText = `
@@ -1403,6 +1577,17 @@ class DiaryNavigatorSettingTab extends PluginSettingTab {
                 .setPlaceholder('YYYY-MM-DD')
                 .setValue(this.plugin.settings.dateFormat)
                 .setDisabled(true));
+
+        new Setting(containerEl)
+            .setName('追踪标签')
+            .setDesc('用于统计“距离上次某标签已经多少天”，支持填写 #标签')
+            .addText((text) => text
+                .setPlaceholder('#复盘')
+                .setValue(this.plugin.settings.trackedTag)
+                .onChange(async (value) => {
+                    this.plugin.settings.trackedTag = value.trim();
+                    await this.plugin.saveSettings();
+                }));
 
         containerEl.createEl('div', {
             text: '提示：折线图可直接打开对应日期日记，柱状图可直接打开对应月份总结文件，热力图与历史上的今天也都支持点击跳转。',
