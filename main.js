@@ -15515,10 +15515,9 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
     Promise.all([
       this.getTotalDiaryCount(),
       this.getTotalWordCount(),
-      this.getCurrentMonthWordCount(),
       this.getTodayWordCount(),
       this.getAvailableTags()
-    ]).then(async ([totalDiaryCount, totalWordCount, monthTotal, todayWordCount, availableTags]) => {
+    ]).then(async ([totalDiaryCount, totalWordCount, todayWordCount, availableTags]) => {
       let trackedTag = this.normalizeTag(this.plugin.settings.trackedTag);
       if (trackedTag && !availableTags.includes(trackedTag)) {
         trackedTag = "";
@@ -15553,14 +15552,37 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
         { label: "\u{1F4D8} \u603B\u65E5\u8BB0\u6570", value: totalDiaryCount.toString() },
         { label: "\u270D\uFE0F \u603B\u8BA1\u5B57\u6570", value: totalWordCount.toLocaleString() },
         { label: "\u{1F5D3}\uFE0F \u4ECA\u65E5\u5B57\u6570", value: todayWordCount.toLocaleString() },
-        { label: "\u{1F4C6} \u672C\u6708\u7D2F\u8BA1", value: monthTotal.toLocaleString() }
+        { label: "\u{1F3C5} \u8FD1\u671F\u6700\u9AD8\u5355\u65E5", value: max.toLocaleString(), suffix: "\u5B57", date: maxDate }
       ];
       statItems.forEach((stat) => {
         const statItem = this.createStatsCard(statsGrid);
         statItem.createDiv("stat-label").setText(stat.label);
         const valueEl = statItem.createDiv("stat-value");
-        valueEl.setText(stat.value);
+        valueEl.setText(stat.suffix ? `${stat.value} ${stat.suffix}` : stat.value);
         valueEl.style.cssText = this.getStatValueStyle();
+        if (stat.date) {
+          const desc = statItem.createEl("a", {
+            text: stat.date,
+            cls: "stat-desc-link"
+          });
+          desc.style.cssText = `
+                        display: inline-block;
+                        margin-top: 4px;
+                        color: var(--text-muted);
+                        font-size: 0.85em;
+                        text-decoration: none;
+                        cursor: pointer;
+                    `;
+          desc.addEventListener("mouseenter", () => {
+            desc.style.color = "var(--text-accent)";
+          });
+          desc.addEventListener("mouseleave", () => {
+            desc.style.color = "var(--text-muted)";
+          });
+          desc.addEventListener("click", async () => {
+            await this.openDiaryFile(stat.date);
+          });
+        }
       });
       if (availableTags.length > 0) {
         const statItem = this.createStatsCard(statsGrid);
@@ -15595,82 +15617,28 @@ var DiaryNavigatorView = class extends import_obsidian.ItemView {
         valueEl.setText(tagSummary.daysSince === null ? "\u6682\u65E0\u8BB0\u5F55" : `\u5DF2\u7ECF ${tagSummary.daysSince} \u5929`);
         valueEl.style.cssText = this.getStatValueStyle();
         if (tagSummary.lastDate) {
-          const desc = statItem.createDiv("stat-desc");
-          desc.setText(`\u4E0A\u6B21\u51FA\u73B0\uFF1A${tagSummary.lastDate}`);
+          const desc = statItem.createEl("a", {
+            text: `\u4E0A\u6B21\u51FA\u73B0\uFF1A${tagSummary.lastDate}`,
+            cls: "stat-desc-link"
+          });
           desc.style.cssText = `
+                        display: inline-block;
                         margin-top: 4px;
                         color: var(--text-muted);
                         font-size: 0.85em;
+                        text-decoration: none;
+                        cursor: pointer;
                     `;
+          desc.addEventListener("mouseenter", () => {
+            desc.style.color = "var(--text-accent)";
+          });
+          desc.addEventListener("mouseleave", () => {
+            desc.style.color = "var(--text-muted)";
+          });
+          desc.addEventListener("click", async () => {
+            await this.openDiaryFile(tagSummary.lastDate);
+          });
         }
-      }
-      const maxDayDiv = statsDiv.createDiv("max-day-item");
-      maxDayDiv.style.cssText = `
-                margin-top: 16px;
-                padding: 16px;
-                background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-primary) 100%);
-                border-radius: 8px;
-                border: 1px solid var(--background-modifier-border);
-                transition: all 0.2s ease;
-            `;
-      maxDayDiv.addEventListener("mouseenter", () => {
-        maxDayDiv.style.transform = "translateY(-2px)";
-        maxDayDiv.style.boxShadow = "0 4px 12px rgba(0,0,0,0.1)";
-        maxDayDiv.style.borderColor = "var(--interactive-accent)";
-      });
-      maxDayDiv.addEventListener("mouseleave", () => {
-        maxDayDiv.style.transform = "translateY(0)";
-        maxDayDiv.style.boxShadow = "none";
-        maxDayDiv.style.borderColor = "var(--background-modifier-border)";
-      });
-      const maxLabelDiv = maxDayDiv.createDiv("max-label");
-      maxLabelDiv.setText("\u{1F3C5} \u8FD1\u671F\u6700\u9AD8\u5355\u65E5");
-      maxLabelDiv.style.cssText = `
-                font-size: 0.9em;
-                color: var(--text-muted);
-                margin-bottom: 8px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            `;
-      const maxValueDiv = maxDayDiv.createDiv("max-value-container");
-      maxValueDiv.style.cssText = `
-                display: flex;
-                align-items: baseline;
-                gap: 15px;
-                flex-wrap: wrap;
-            `;
-      const maxValue = maxValueDiv.createSpan();
-      maxValue.setText(`${max.toLocaleString()} \u5B57`);
-      maxValue.style.cssText = `
-                font-size: 1.8em;
-                font-weight: bold;
-                color: var(--text-accent);
-            `;
-      if (maxDate) {
-        const maxLink = maxValueDiv.createEl("a", {
-          text: `\u{1F4C5} ${maxDate}`,
-          cls: "max-day-link"
-        });
-        maxLink.style.cssText = `
-                    color: var(--text-muted);
-                    text-decoration: none;
-                    cursor: pointer;
-                    font-size: 1em;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    background-color: var(--background-modifier-hover);
-                `;
-        maxLink.addEventListener("mouseenter", () => {
-          maxLink.style.color = "var(--text-accent)";
-          maxLink.style.backgroundColor = "var(--background-modifier-active-hover)";
-        });
-        maxLink.addEventListener("mouseleave", () => {
-          maxLink.style.color = "var(--text-muted)";
-          maxLink.style.backgroundColor = "var(--background-modifier-hover)";
-        });
-        maxLink.addEventListener("click", async () => {
-          await this.openDiaryFile(maxDate);
-        });
       }
     }).catch((error) => {
       console.error("\u66F4\u65B0\u7EDF\u8BA1\u4FE1\u606F\u65F6\u51FA\u9519:", error);

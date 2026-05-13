@@ -1181,10 +1181,9 @@ class DiaryNavigatorView extends ItemView {
         Promise.all([
             this.getTotalDiaryCount(),
             this.getTotalWordCount(),
-            this.getCurrentMonthWordCount(),
             this.getTodayWordCount(),
             this.getAvailableTags()
-        ]).then(async ([totalDiaryCount, totalWordCount, monthTotal, todayWordCount, availableTags]) => {
+        ]).then(async ([totalDiaryCount, totalWordCount, todayWordCount, availableTags]) => {
             let trackedTag = this.normalizeTag(this.plugin.settings.trackedTag);
             if (trackedTag && !availableTags.includes(trackedTag)) {
                 trackedTag = '';
@@ -1225,15 +1224,39 @@ class DiaryNavigatorView extends ItemView {
                 { label: '📘 总日记数', value: totalDiaryCount.toString() },
                 { label: '✍️ 总计字数', value: totalWordCount.toLocaleString() },
                 { label: '🗓️ 今日字数', value: todayWordCount.toLocaleString() },
-                { label: '📆 本月累计', value: monthTotal.toLocaleString() }
+                { label: '🏅 近期最高单日', value: max.toLocaleString(), suffix: '字', date: maxDate }
             ];
 
             statItems.forEach((stat) => {
                 const statItem = this.createStatsCard(statsGrid);
                 statItem.createDiv('stat-label').setText(stat.label);
                 const valueEl = statItem.createDiv('stat-value');
-                valueEl.setText(stat.value);
+                valueEl.setText(stat.suffix ? `${stat.value} ${stat.suffix}` : stat.value);
                 valueEl.style.cssText = this.getStatValueStyle();
+
+                if (stat.date) {
+                    const desc = statItem.createEl('a', {
+                        text: stat.date,
+                        cls: 'stat-desc-link'
+                    });
+                    desc.style.cssText = `
+                        display: inline-block;
+                        margin-top: 4px;
+                        color: var(--text-muted);
+                        font-size: 0.85em;
+                        text-decoration: none;
+                        cursor: pointer;
+                    `;
+                    desc.addEventListener('mouseenter', () => {
+                        desc.style.color = 'var(--text-accent)';
+                    });
+                    desc.addEventListener('mouseleave', () => {
+                        desc.style.color = 'var(--text-muted)';
+                    });
+                    desc.addEventListener('click', async () => {
+                        await this.openDiaryFile(stat.date!);
+                    });
+                }
             });
 
             if (availableTags.length > 0) {
@@ -1272,87 +1295,28 @@ class DiaryNavigatorView extends ItemView {
                 valueEl.style.cssText = this.getStatValueStyle();
 
                 if (tagSummary.lastDate) {
-                    const desc = statItem.createDiv('stat-desc');
-                    desc.setText(`上次出现：${tagSummary.lastDate}`);
+                    const desc = statItem.createEl('a', {
+                        text: `上次出现：${tagSummary.lastDate}`,
+                        cls: 'stat-desc-link'
+                    });
                     desc.style.cssText = `
+                        display: inline-block;
                         margin-top: 4px;
                         color: var(--text-muted);
                         font-size: 0.85em;
+                        text-decoration: none;
+                        cursor: pointer;
                     `;
+                    desc.addEventListener('mouseenter', () => {
+                        desc.style.color = 'var(--text-accent)';
+                    });
+                    desc.addEventListener('mouseleave', () => {
+                        desc.style.color = 'var(--text-muted)';
+                    });
+                    desc.addEventListener('click', async () => {
+                        await this.openDiaryFile(tagSummary.lastDate!);
+                    });
                 }
-            }
-
-            const maxDayDiv = statsDiv!.createDiv('max-day-item');
-            maxDayDiv.style.cssText = `
-                margin-top: 16px;
-                padding: 16px;
-                background: linear-gradient(135deg, var(--background-primary) 0%, var(--background-primary) 100%);
-                border-radius: 8px;
-                border: 1px solid var(--background-modifier-border);
-                transition: all 0.2s ease;
-            `;
-            maxDayDiv.addEventListener('mouseenter', () => {
-                maxDayDiv.style.transform = 'translateY(-2px)';
-                maxDayDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
-                maxDayDiv.style.borderColor = 'var(--interactive-accent)';
-            });
-            maxDayDiv.addEventListener('mouseleave', () => {
-                maxDayDiv.style.transform = 'translateY(0)';
-                maxDayDiv.style.boxShadow = 'none';
-                maxDayDiv.style.borderColor = 'var(--background-modifier-border)';
-            });
-
-            const maxLabelDiv = maxDayDiv.createDiv('max-label');
-            maxLabelDiv.setText('🏅 近期最高单日');
-            maxLabelDiv.style.cssText = `
-                font-size: 0.9em;
-                color: var(--text-muted);
-                margin-bottom: 8px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            `;
-
-            const maxValueDiv = maxDayDiv.createDiv('max-value-container');
-            maxValueDiv.style.cssText = `
-                display: flex;
-                align-items: baseline;
-                gap: 15px;
-                flex-wrap: wrap;
-            `;
-
-            const maxValue = maxValueDiv.createSpan();
-            maxValue.setText(`${max.toLocaleString()} 字`);
-            maxValue.style.cssText = `
-                font-size: 1.8em;
-                font-weight: bold;
-                color: var(--text-accent);
-            `;
-
-            if (maxDate) {
-                const maxLink = maxValueDiv.createEl('a', {
-                    text: `📅 ${maxDate}`,
-                    cls: 'max-day-link'
-                });
-                maxLink.style.cssText = `
-                    color: var(--text-muted);
-                    text-decoration: none;
-                    cursor: pointer;
-                    font-size: 1em;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    background-color: var(--background-modifier-hover);
-                `;
-                maxLink.addEventListener('mouseenter', () => {
-                    maxLink.style.color = 'var(--text-accent)';
-                    maxLink.style.backgroundColor = 'var(--background-modifier-active-hover)';
-                });
-                maxLink.addEventListener('mouseleave', () => {
-                    maxLink.style.color = 'var(--text-muted)';
-                    maxLink.style.backgroundColor = 'var(--background-modifier-hover)';
-                });
-                maxLink.addEventListener('click', async () => {
-                    await this.openDiaryFile(maxDate);
-                });
             }
         }).catch((error) => {
             console.error('更新统计信息时出错:', error);
